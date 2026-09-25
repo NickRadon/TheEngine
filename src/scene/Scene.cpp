@@ -1,0 +1,450 @@
+#include "scene/Scene.h"
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/euler_angles.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <type_traits>
+#include <functional>
+
+glm::mat4 Transform::Matrix() const
+{
+    return glm::translate(glm::mat4(1.0f), position) * glm::mat4_cast(rotation) * glm::scale(glm::mat4(1.0f), scale);
+}
+
+void Transform::SetEuler(const glm::vec3& degrees)
+{
+    euler = degrees;
+    // Same application order as Unity: Z, then X, then Y.
+    glm::vec3 r = glm::radians(degrees);
+    rotation = glm::normalize(glm::quat_cast(glm::eulerAngleYXZ(r.y, r.x, r.z)));
+}
+
+void Transform::SyncEulerFromRotation()
+{
+    float y, x, z;
+    glm::extractEulerAngleYXZ(glm::mat4_cast(rotation), y, x, z);
+    glm::vec3 fresh = glm::degrees(glm::vec3(x, y, z));
+    // Keep the representation closest to the previous one to avoid visible jumps (e.g. 180 vs -180).
+    for (int i = 0; i < 3; ++i)
+    {
+        while (fresh[i] - euler[i] > 180.0f) fresh[i] -= 360.0f;
+        while (fresh[i] - euler[i] < -180.0f) fresh[i] += 360.0f;
+        if (std::fabs(fresh[i]) < 1e-4f) fresh[i] = 0.0f; // avoid displaying "-0"
+    }
+    euler = fresh;
+}
+
+Entity& Scene::Create(const std::string& entityName, EntityId parent)
+{
+    Entity e;
+    e.id = m_NextId++;
+    e.name = entityName;
+    e.parent = parent;
+    entities.push_back(e);
+    return entities.back();
+}
+
+int Scene::IndexOf(EntityId id) const
+{
+    for (size_t i = 0; i < entities.size(); ++i)
+        if (entities[i].id == id) return static_cast<int>(i);
+    return -1;
+}
+
+Entity* Scene::Find(EntityId id)
+{
+    int i = IndexOf(id);
+    return i >= 0 ? &entities[i] : nullptr;
+}
+
+const Entity* Scene::Find(EntityId id) const
+{
+    int i = IndexOf(id);
+    return i >= 0 ? &entities[i] : nullptr;
+}
+
+glm::mat4 Scene::WorldMatrix(EntityId id) const
+{
+    const Entity* e = Find(id);
+    if (!e) return glm::mat4(1.0f);
+    glm::mat4 local = e->transform.Matrix();
+    return e->parent != kNullEntity ? WorldMatrix(e->parent) * local : local;
+}
+
+void Scene::SetWorldMatrix(EntityId id, const glm::mat4& world)
+{
+    Entity* e = Find(id);
+    if (!e) return;
+    glm::mat4 local = e->parent != kNullEntity ? glm::inverse(WorldMatrix(e->parent)) * world : world;
+    glm::vec3 skew;
+    glm::vec4 perspective;
+    glm::vec3 scale, translation;
+    glm::quat rotation;
+    if (!glm::decompose(local, scale, rotation, translation, skew, perspective)) return;
+    e->transform.position = translation;
+    e->transform.rotation = glm::normalize(rotation);
+    e->transform.scale = scale;
+    e->transform.SyncEulerFromRotation();
+}
+
+bool Scene::IsActiveInHierarchy(EntityId id) const
+{
+    for (const Entity* e = Find(id); e; e = Find(e->parent))
+        if (!e->active) return false;
+    return true;
+}
+
+bool Scene::IsAncestor(EntityId ancestor, EntityId id) const
+{
+    const Entity* e = Find(id);
+    while (e && e->parent != kNullEntity)
+    {
+        if (e->parent == ancestor) return true;
+        e = Find(e->parent);
+    }
+    return false;
+}
+
+std::vector<EntityId> Scene::Children(EntityId parent) const
+{
+    std::vector<EntityId> out;
+    for (const auto& e : entities)
+        if (e.parent == parent) out.push_back(e.id);
+    return out;
+}
+
+void Scene::SetParent(EntityId child, EntityId parent, bool keepWorld)
+{
+    if (child == parent || IsAncestor(child, parent)) return; // would create a cycle
+    Entity* e = Find(child);
+    if (!e) return;
+    glm::mat4 world = WorldMatrix(child);
+    e->parent = parent;
+    if (keepWorld) SetWorldMatrix(child, world);
+
+    // Move to the end so it becomes the last child.
+    int idx = IndexOf(child);
+    Entity moved = entities[idx];
+    entities.erase(entities.begin() + idx);
+    entities.push_back(moved);
+}
+
+void Scene::MoveBefore(EntityId id, EntityId before)
+{
+    int from = IndexOf(id);
+    if (from < 0 || id == before) return;
+    Entity moved = entities[from];
+    entities.erase(entities.begin() + from);
+    int to = IndexOf(before);
+    if (to < 0) entities.push_back(moved);
+    else entities.insert(entities.begin() + to, moved);
+}
+
+void Scene::Destroy(EntityId id)
+{
+    for (EntityId child : Children(id))
+        Destroy(child);
+    int idx = IndexOf(id);
+    if (idx >= 0) entities.erase(entities.begin() + idx);
+}
+
+EntityId Scene::CloneRecursive(EntityId src, EntityId newParent, int insertAt)
+{
+    const Entity* s = Find(src);
+    if (!s) return kNullEntity;
+    Entity copy = *s;
+    copy.id = m_NextId++;
+    copy.parent = newParent;
+    if (insertAt >= 0 && insertAt <= static_cast<int>(entities.size()))
+        entities.insert(entities.begin() + insertAt, copy);
+    else
+        entities.push_back(copy);
+    EntityId newId = copy.id;
+    for (EntityId child : Children(src))
+        CloneRecursive(child, newId, -1);
+    return newId;
+}
+
+EntityId Scene::Duplicate(EntityId id)
+{
+    const Entity* e = Find(id);
+    if (!e) return kNullEntity;
+    // Insert right after the original's subtree position, like Unity.
+    EntityId newId = CloneRecursive(id, e->parent, IndexOf(id) + 1);
+    if (Entity* n = Find(newId)) n->name = UniqueName(*this, Find(id)->name);
+    return newId;
+}
+
+std::string UniqueName(const Scene& scene, const std::string& base)
+{
+    // Strip an existing " (n)" suffix.
+    std::string root = base;
+    if (!root.empty() && root.back() == ')')
+    {
+        size_t open = root.rfind(" (");
+        if (open != std::string::npos) root = root.substr(0, open);
+    }
+    auto exists = [&](const std::string& n) {
+        return std::any_of(scene.entities.begin(), scene.entities.end(), [&](const Entity& e) { return e.name == n; });
+    };
+    if (!exists(root)) return root;
+    for (int i = 1;; ++i)
+    {
+        std::string candidate = root + " (" + std::to_string(i) + ")";
+        if (!exists(candidate)) return candidate;
+    }
+}
+
+ScriptField* ScriptComponent::FindField(const std::string& fieldName)
+{
+    for (ScriptField& f : fields)
+        if (f.name == fieldName) return &f;
+    return nullptr;
+}
+
+void Scene::CreateDefault()
+{
+    {
+        Entity& cam = Create("Main Camera");
+        cam.transform.position = { 0.0f, 2.0f, 9.0f };
+        cam.transform.SetEuler({ -8.0f, 0.0f, 0.0f });
+        cam.camera.enabled = true;
+    }
+    {
+        Entity& light = Create("Directional Light");
+        light.transform.position = { 0.0f, 3.0f, 0.0f };
+        light.transform.SetEuler({ -35.0f, -30.0f, 0.0f });
+        light.light.enabled = true;
+    }
+    {
+        Entity& ground = Create("Ground");
+        ground.meshRenderer.enabled = true;
+        ground.meshRenderer.mesh = "Plane";
+        ground.meshRenderer.color = { 0.45f, 0.45f, 0.45f };
+        ground.meshRenderer.smoothness = 0.2f;
+        ground.transform.scale = { 2.0f, 1.0f, 2.0f };
+    }
+    {
+        Entity& cube = Create("Cube");
+        cube.meshRenderer.enabled = true;
+        cube.meshRenderer.mesh = "Cube";
+        cube.meshRenderer.color = { 0.85f, 0.3f, 0.25f };
+        cube.transform.position = { -2.5f, 0.5f, 0.0f };
+        cube.transform.SetEuler({ 0.0f, 25.0f, 0.0f });
+        ScriptComponent rotator;
+        rotator.className = "Rotator";
+        rotator.fields.push_back({ "degreesPerSecond", "Vector3", "0 45 0" });
+        cube.scripts.push_back(rotator);
+    }
+    {
+        Entity& sphere = Create("Sphere");
+        sphere.meshRenderer.enabled = true;
+        sphere.meshRenderer.mesh = "Sphere";
+        sphere.meshRenderer.color = { 0.95f, 0.8f, 0.4f };
+        sphere.meshRenderer.metallic = 1.0f;
+        sphere.meshRenderer.smoothness = 0.85f;
+        sphere.transform.position = { 0.0f, 0.75f, 0.0f };
+        sphere.transform.scale = glm::vec3(1.5f);
+    }
+    {
+        Entity& capsule = Create("Capsule");
+        capsule.meshRenderer.enabled = true;
+        capsule.meshRenderer.mesh = "Capsule";
+        capsule.meshRenderer.color = { 0.3f, 0.55f, 0.9f };
+        capsule.transform.position = { 2.5f, 1.0f, 0.0f };
+        EntityId capsuleId = capsule.id;
+
+        Entity& hat = Create("Hat", capsuleId);
+        hat.meshRenderer.enabled = true;
+        hat.meshRenderer.mesh = "Cylinder";
+        hat.meshRenderer.color = { 0.15f, 0.15f, 0.18f };
+        hat.transform.position = { 0.0f, 1.05f, 0.0f };
+        hat.transform.scale = { 0.7f, 0.1f, 0.7f };
+    }
+    {
+        Entity& lamp = Create("Point Light");
+        lamp.light.enabled = true;
+        lamp.light.type = LightType::Point;
+        lamp.light.color = { 1.0f, 0.6f, 0.3f };
+        lamp.light.intensity = 3.0f;
+        lamp.light.range = 6.0f;
+        lamp.transform.position = { 1.2f, 1.2f, 1.6f };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Serialization: a small line-based text format.
+// ---------------------------------------------------------------------------
+namespace
+{
+    std::ostream& operator<<(std::ostream& os, const glm::vec3& v) { return os << v.x << ' ' << v.y << ' ' << v.z; }
+    std::istream& operator>>(std::istream& is, glm::vec3& v) { return is >> v.x >> v.y >> v.z; }
+}
+
+bool Scene::Save(const std::string& path) const
+{
+    std::ofstream out(path);
+    if (!out) return false;
+    out << "TheEngineScene 2\n";
+    out << "name " << std::quoted(name) << "\n";
+    out << "sky " << sky.enabled << ' ' << sky.sunSize << ' ' << sky.sunConvergence << ' ' << sky.atmosphereThickness << ' '
+        << sky.skyTint << ' ' << sky.groundColor << ' ' << sky.exposure << ' ' << sky.ambientIntensity << ' '
+        << sky.cloudCoverage << ' ' << sky.cloudDensity << ' ' << sky.cloudSpeed << ' ' << sky.cloudScale << ' '
+        << sky.stars << ' ' << sky.fallbackColor << ' ' << sky.shadowDistance << ' '
+        << sky.ssao << ' ' << sky.ssaoRadius << ' ' << sky.ssaoIntensity << "\n";
+    for (const Entity& e : entities)
+    {
+        const Transform& t = e.transform;
+        out << "entity " << e.id << ' ' << e.parent << ' ' << e.active << ' ' << std::quoted(e.name) << "\n";
+        out << "  transform " << t.position << ' ' << t.rotation.x << ' ' << t.rotation.y << ' ' << t.rotation.z << ' '
+            << t.rotation.w << ' ' << t.scale << ' ' << t.euler << "\n";
+        const auto& m = e.meshRenderer;
+        out << "  mesh " << m.enabled << ' ' << std::quoted(m.mesh) << ' ' << m.color << ' ' << m.metallic << ' '
+            << m.smoothness << ' ' << std::quoted(m.material) << ' ' << m.castShadows << "\n";
+        const auto& l = e.light;
+        out << "  light " << l.enabled << ' ' << l.color << ' ' << l.intensity << ' ' << l.castShadows << ' '
+            << l.shadowStrength << ' ' << static_cast<int>(l.type) << ' ' << l.range << ' ' << l.spotAngle << ' '
+            << l.innerSpotAngle << "\n";
+        const auto& c = e.camera;
+        out << "  camera " << c.enabled << ' ' << c.fov << ' ' << c.nearClip << ' ' << c.farClip << ' ' << c.orthographic << ' ' << c.orthoSize << "\n";
+        for (const ScriptComponent& s : e.scripts)
+        {
+            out << "  script " << s.enabled << ' ' << std::quoted(s.className) << "\n";
+            for (const ScriptField& f : s.fields)
+                out << "    field " << std::quoted(f.name) << ' ' << std::quoted(f.type) << ' ' << std::quoted(f.value) << "\n";
+        }
+    }
+    return static_cast<bool>(out);
+}
+
+bool Scene::Load(const std::string& path)
+{
+    std::ifstream file(path);
+    if (!file) return false;
+    std::string header;
+    int version = 0;
+    file >> header >> version;
+    if (header != "TheEngineScene") return false;
+
+    // Line based: fields added in later versions are optional at the end of a line, so older files still load.
+    auto optional = [](std::istream& is, auto& field) {
+        std::remove_reference_t<decltype(field)> value{};
+        if (is >> value) field = value;
+    };
+
+    Scene loaded;
+    Entity* current = nullptr;
+    std::string line;
+    std::getline(file, line); // rest of header line
+    while (std::getline(file, line))
+    {
+        std::istringstream in(line);
+        std::string key;
+        if (!(in >> key)) continue;
+        if (key == "name") in >> std::quoted(loaded.name);
+        else if (key == "sky")
+        {
+            SkySettings& s = loaded.sky;
+            in >> s.enabled >> s.sunSize >> s.sunConvergence >> s.atmosphereThickness >> s.skyTint >> s.groundColor
+               >> s.exposure >> s.ambientIntensity >> s.cloudCoverage >> s.cloudDensity >> s.cloudSpeed >> s.cloudScale
+               >> s.stars >> s.fallbackColor;
+            if (in.fail()) return false;
+            optional(in, s.shadowDistance);
+            optional(in, s.ssao);
+            optional(in, s.ssaoRadius);
+            optional(in, s.ssaoIntensity);
+            continue;
+        }
+        else if (key == "entity")
+        {
+            loaded.entities.emplace_back();
+            current = &loaded.entities.back();
+            in >> current->id >> current->parent >> current->active >> std::quoted(current->name);
+            loaded.m_NextId = std::max(loaded.m_NextId, current->id + 1);
+        }
+        else if (current && key == "transform")
+        {
+            Transform& t = current->transform;
+            in >> t.position >> t.rotation.x >> t.rotation.y >> t.rotation.z >> t.rotation.w >> t.scale >> t.euler;
+        }
+        else if (current && key == "mesh")
+        {
+            auto& m = current->meshRenderer;
+            in >> m.enabled >> std::ws;
+            if (in.peek() == '"')
+            {
+                in >> std::quoted(m.mesh) >> m.color >> m.metallic >> m.smoothness;
+                if (in.fail()) return false;
+                in >> std::ws;
+                if (in.peek() == '"') in >> std::quoted(m.material);
+                optional(in, m.castShadows);
+                continue;
+            }
+            // Version 1: primitive enum index.
+            int type = 0;
+            in >> type >> m.color >> m.metallic >> m.smoothness;
+            m.mesh = PrimitiveName(static_cast<PrimitiveType>(std::clamp(type, 0, static_cast<int>(PrimitiveType::Count) - 1)));
+        }
+        else if (current && key == "light")
+        {
+            auto& l = current->light;
+            in >> l.enabled >> l.color >> l.intensity;
+            if (in.fail()) return false;
+            optional(in, l.castShadows);
+            optional(in, l.shadowStrength);
+            int type = 0;
+            if (in >> type) l.type = static_cast<LightType>(std::clamp(type, 0, 2));
+            optional(in, l.range);
+            optional(in, l.spotAngle);
+            optional(in, l.innerSpotAngle);
+            continue;
+        }
+        else if (current && key == "camera")
+        {
+            auto& c = current->camera;
+            in >> c.enabled >> c.fov >> c.nearClip >> c.farClip >> c.orthographic >> c.orthoSize;
+        }
+        else if (current && key == "script")
+        {
+            ScriptComponent s;
+            in >> s.enabled >> std::quoted(s.className);
+            current->scripts.push_back(s);
+        }
+        else if (current && key == "field" && !current->scripts.empty())
+        {
+            ScriptField f;
+            in >> std::quoted(f.name) >> std::quoted(f.type) >> std::quoted(f.value);
+            current->scripts.back().fields.push_back(f);
+        }
+        else if (current && key == "rotator")
+        {
+            // Version 1 built-in Rotator component: now a C# script with the same field.
+            bool enabled = false;
+            glm::vec3 speed(0.0f);
+            in >> enabled >> speed;
+            if (!in.fail() && enabled)
+            {
+                ScriptComponent s;
+                s.className = "Rotator";
+                std::ostringstream v;
+                v << speed.x << ' ' << speed.y << ' ' << speed.z;
+                s.fields.push_back({ "degreesPerSecond", "Vector3", v.str() });
+                current->scripts.push_back(s);
+            }
+            continue;
+        }
+        else
+        {
+            continue; // unknown key: skip line
+        }
+        if (in.fail()) return false;
+    }
+    *this = std::move(loaded);
+    return true;
+}
