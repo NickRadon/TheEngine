@@ -184,7 +184,13 @@ namespace TheEngine.Internal
             }
             foreach (Instance i in instances)
                 if (i.Started && i.Behaviour.enabled && IsAlive(i)) Invoke(i.Update, i.Behaviour, "Update");
-            foreach (Instance i in instances)
+        }
+
+        /// <summary>LateUpdate runs after animation (root motion) has been applied, like Unity.</summary>
+        [UnmanagedCallersOnly]
+        public static void LateTick()
+        {
+            foreach (Instance i in s_Instances.Values.ToList())
                 if (i.Started && i.Behaviour.enabled && IsAlive(i)) Invoke(i.LateUpdate, i.Behaviour, "LateUpdate");
         }
 

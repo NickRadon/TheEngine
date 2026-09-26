@@ -33,6 +33,8 @@ namespace TheEngine.Internal
         public delegate* unmanaged<int, float*, void> PhysicsGravity;
         public delegate* unmanaged<ulong, float*, int, ulong> EntityInstantiate;
         public delegate* unmanaged<char*, float*, int, ulong> PrefabInstantiate;
+        public delegate* unmanaged<ulong, char*, int, float, float> AnimatorParam;
+        public delegate* unmanaged<ulong, char*, int, int> AnimatorStateName;
     }
 
     internal static unsafe class Native
@@ -65,9 +67,11 @@ namespace TheEngine.Internal
         CameraFieldOfView = 6,   // float[1]
         ColliderIsTrigger = 7,   // float[1]
         ColliderEnabled = 8,     // float[1]
+        AnimatorApplyRootMotion = 9, // float[1]
+        AnimatorEnabled = 10,    // float[1]
     }
 
-    internal enum EngineComponent { MeshRenderer = 0, Light = 1, Camera = 2, Rigidbody = 3, Collider = 4 }
+    internal enum EngineComponent { MeshRenderer = 0, Light = 1, Camera = 2, Rigidbody = 3, Collider = 4, Animator = 5 }
 
     internal enum RigidbodyProperty { Velocity = 0, AngularVelocity = 1, Mass = 2, UseGravity = 3, IsKinematic = 4, Drag = 5, AngularDrag = 6 }
 }

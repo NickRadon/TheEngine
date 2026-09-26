@@ -11,7 +11,8 @@ A small Unity-style game engine/editor written in C++20:
 - **Reflections:** the sky is captured into a GGX-prefiltered cube map; Reflection Probes capture the scene (optionally box-projected) and re-bake automatically when moved or when the lighting changes
 - **Post-processing:** Unity-style Volumes (global or local with blend distance and priority): bloom, color adjustments, white balance, vignette, and ACES/Neutral tonemapping
 - **Materials:** `.mat` assets with albedo/normal/mask textures, tiling and emission; textures are mipmapped and hot-reloaded when changed on disk
-- **Models:** glTF 2.0 (`.gltf` / `.glb`) import via cgltf; node hierarchy, meshes, materials and embedded images are brought in
+- **Models:** glTF 2.0 (`.gltf` / `.glb`) via cgltf and FBX via ufbx: meshes, materials, skinned meshes with their skeleton, and animation clips
+- **Animation:** Animator component + node-based Animator Controller (states, transitions with conditions/exit time, parameters, 1D/2D blend trees, Any State), GPU skinning, root motion, name-based retargeting between rigs that share bone names
 - **Scripting:** C# like Unity (`MonoBehaviour`, `Start`/`Update`/`FixedUpdate`, `transform`, `Input`, `Time`, `Debug.Log`, `Instantiate`, serialized fields in the Inspector), hosted on .NET through hostfxr
 - **Physics:** Jolt Physics with Unity-style Rigidbody and Box/Sphere/Capsule/Mesh Collider components, triggers, raycasts and collision messages
 - **Prefabs:** reusable object hierarchies with per-property overrides, Apply/Revert, and a prefab editing mode
@@ -89,13 +90,34 @@ public class Ball : MonoBehaviour
 - **Edit:** double-click the prefab (or use *Open* in the Inspector) to edit it on its own, then use the back arrow in the Hierarchy. Changes reach every instance.
 - **Overrides:** values you change on an instance are kept when the prefab changes. The Inspector's *Overrides* menu lists them, with *Apply All* and *Revert All*. The root's position, rotation and name always belong to the instance.
 
+## Animation
+
+1. Drop a rigged FBX into the scene. It gets an **Animator** component (bones stay inside the model, not in the Hierarchy).
+2. Create an Animator Controller (*Assets > Create > Animator Controller*, or *New* on the Animator component) and open it in the **Animator** window (*Window > Animation > Animator*).
+3. In the Animator window:
+   - **States:** drag FBX animations onto the graph to make states, or right-click to create empty states and blend trees. The first state becomes the default (orange).
+   - **Transitions:** right-click a state > *Make Transition*, then click the target. Select a transition to set its conditions, exit time and blend duration.
+   - **Parameters:** add Float/Int/Bool/Trigger parameters on the left. In play mode they show live values, and the playing state shows a progress bar.
+   - **Blend trees:** 1D uses thresholds. 2D is freeform cartesian with gradient band interpolation (like Unity).
+4. **Root motion:** with *Apply Root Motion* on, the planar movement and turning of the clip's root bone move the object; clips without it play in place. Drive the parameters from C#:
+
+```csharp
+Animator animator = GetComponent<Animator>();
+animator.SetFloat("MoveY", Input.GetAxis("Vertical") * 2f, 0.1f, Time.deltaTime); // damped
+animator.SetTrigger("Jump");
+```
+
+Clips are matched to the model's skeleton by bone name. They take rotations from the clip, and translations only for the root and hips, so rigs that share bone names (e.g. the Unreal mannequin family) can share animations.
+
+`TheEngine --project <folder> --playtest <seconds> [--hold W,LeftShift] [--capture-dir <folder>]` plays a project with keys held down. It logs animated objects and saves Game view and editor screenshots, which is useful for checking movement without touching the mouse or keyboard.
+
 ## Assets
 
 The Project window shows the real `Assets/` folder: a folder tree, thumbnails, search, create/rename/delete (to the Recycle Bin), drag-to-move, and *Show in Explorer*. You can drop files from Explorer to import them. Drag a model into the Scene view or Hierarchy to instantiate it, and a material onto an object to assign it.
 
 ## Tests
 
-`TheEngine --selftest` creates a temporary project and drives the editor through injected ImGui input. It covers gizmo drag, undo/redo, marquee selection, orbit, zoom, F framing, play mode, save/load, materials, glTF import, C# scripts and compile errors, physics and collision messages, prefabs and `Instantiate`, and exits with the number of failures. It never touches the OS mouse or keyboard. Add `--capture-dir <folder>` to also save Scene view renders as BMP files.
+`TheEngine --selftest` creates a temporary project and drives the editor through injected ImGui input. It covers gizmo drag, undo/redo, marquee selection, orbit, zoom, F framing, play mode, save/load, materials, glTF import, C# scripts and compile errors, physics and collision messages, prefabs and `Instantiate`, animator state machines, blend trees and root motion, and exits with the number of failures. It never touches the OS mouse or keyboard. Add `--capture-dir <folder>` to also save Scene view renders as BMP files.
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
@@ -135,9 +157,10 @@ src/launcher   project launcher (Hub)
 src/render     Vulkan context, meshes, resource cache (textures/materials/glTF), scene renderer
 src/scene      entities, components, hierarchy, text scene/material/prefab formats, prefab overrides
 src/physics    Jolt Physics world (bodies, contacts, raycasts)
+src/anim       FBX import, skeletons, clips, Animator Controller runtime, animation system
 src/scripting  .NET host, script compilation and native API for C#
 src/editor     editor shell, panels, asset browser, scene/game views, Unity-style camera, self-test
 scripting/     TheEngine.ScriptCore (the C# engine API)
 shaders/       GLSL (sky, lit mesh, shadows, SSAO, grid, selection mask, composite)
-external/      third-party sources (imgui, ImGuizmo, ImAnim, glfw, volk, Vulkan-Headers, glm, glslang, stb, cgltf, JoltPhysics) as git submodules
+external/      third-party sources (imgui, ImGuizmo, ImAnim, glfw, volk, Vulkan-Headers, glm, glslang, stb, cgltf, JoltPhysics, ufbx) as git submodules
 ```

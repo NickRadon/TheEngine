@@ -72,11 +72,33 @@ namespace
 int main(int argc, char** argv)
 {
     bool selfTest = false;
+    float playtest = 0.0f;
+    std::vector<int> heldKeys;
     std::string captureDir, projectArg;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
         if (arg == "--selftest") selfTest = true;
+        else if (arg == "--playtest" && i + 1 < argc) playtest = static_cast<float>(std::atof(argv[++i]));
+        else if (arg == "--hold" && i + 1 < argc)
+        {
+            // Unity KeyCode names or numbers, comma separated (e.g. W,LeftShift).
+            static const std::pair<const char*, int> names[] = { { "W", 119 }, { "A", 97 }, { "S", 115 }, { "D", 100 }, { "Q", 113 },
+                { "E", 101 }, { "Space", 32 }, { "LeftShift", 304 }, { "LeftControl", 306 }, { "Mouse1", 324 } };
+            std::string list = argv[++i];
+            size_t start = 0;
+            while (start <= list.size())
+            {
+                const size_t comma = list.find(',', start);
+                const std::string key = list.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                int code = std::atoi(key.c_str());
+                for (auto& [n, c] : names)
+                    if (key == n) code = c;
+                if (code > 0) heldKeys.push_back(code);
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        }
         else if (arg == "--capture-dir" && i + 1 < argc) captureDir = argv[++i];
         else if (arg == "--project" && i + 1 < argc) projectArg = argv[++i];
     }
@@ -90,8 +112,9 @@ int main(int argc, char** argv)
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_MAXIMIZED, selfTest ? GLFW_FALSE : GLFW_TRUE);
-    if (selfTest)
+    const bool automated = selfTest || playtest > 0.0f;
+    glfwWindowHint(GLFW_MAXIMIZED, automated ? GLFW_FALSE : GLFW_TRUE);
+    if (automated)
     {
         // Don't steal focus from the user; the test injects input through ImGui only.
         glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
@@ -116,7 +139,7 @@ int main(int argc, char** argv)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
     static const std::string iniPath = (fs::path(Platform::AppDataDir()) / "EditorLayout.ini").string();
-    io.IniFilename = selfTest ? nullptr : iniPath.c_str(); // tests always use the default layout
+    io.IniFilename = automated ? nullptr : iniPath.c_str(); // tests always use the default layout
 
     float scaleX = 1.0f, scaleY = 1.0f;
     glfwGetWindowContentScale(window, &scaleX, &scaleY);
@@ -125,7 +148,7 @@ int main(int argc, char** argv)
     EditorUI::LoadFonts(scaleX);
 
     // In self-test mode no OS input callbacks are installed, so real mouse/keyboard input can't interfere.
-    ImGui_ImplGlfw_InitForVulkan(window, !selfTest);
+    ImGui_ImplGlfw_InitForVulkan(window, !automated);
 
     VkFormat swapFormat = vk.SwapchainFormat();
     ImGui_ImplVulkan_InitInfo init = {};
@@ -224,6 +247,7 @@ int main(int argc, char** argv)
     g_Editor = &editor;
     editor.Init(&vk, &renderer, &resources, &scripts, window);
     if (selfTest) editor.EnableSelfTest(captureDir);
+    if (playtest > 0.0f) editor.EnablePlaytest(playtest, heldKeys, captureDir);
 
     while (!glfwWindowShouldClose(window) && !editor.WantsQuit())
     {

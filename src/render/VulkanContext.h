@@ -72,6 +72,8 @@ public:
     VkQueue Queue() const { return m_Queue; }
     uint32_t QueueFamily() const { return m_QueueFamily; }
     VkFormat SwapchainFormat() const { return m_SwapchainFormat; }
+    // Saves the next presented frame (the whole editor window) as a BMP.
+    void RequestScreenshot(const std::string& path) { m_ScreenshotPath = path; }
     uint32_t SwapchainImageCount() const { return static_cast<uint32_t>(m_SwapchainImages.size()); }
     uint32_t MinImageCount() const { return m_MinImageCount; }
     bool SupportsWireframe() const { return m_SupportsWireframe; }
@@ -122,6 +124,9 @@ private:
     Frame m_Frames[kFramesInFlight];
     uint32_t m_FrameIndex = 0;
     uint32_t m_ImageIndex = 0;
+    std::string m_ScreenshotPath;
+    GpuBuffer m_ScreenshotBuffer;
+    bool m_ScreenshotRecorded = false;
 
     VkCommandPool m_UploadPool = VK_NULL_HANDLE;
     VkFence m_UploadFence = VK_NULL_HANDLE;

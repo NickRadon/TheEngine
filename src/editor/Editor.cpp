@@ -55,6 +55,9 @@ bool Editor::Init(VulkanContext* vk, SceneRenderer* renderer, ResourceCache* res
     SyncPrefabInstancesAfterLoad();
     m_SceneDirty = false;
     m_Scripts->SetScene(&m_Scene);
+    m_Animation.Init(m_Res);
+    m_Scripts->SetAnimation(&m_Animation);
+    m_Renderer->SetPaletteProvider([this](EntityId id) { return m_Animation.Palette(id); });
     ScanAssets();
     m_Scripts->RequestCompile();
 
@@ -95,6 +98,7 @@ void Editor::Shutdown()
 void Editor::Update(float dt)
 {
     if (m_Test) RunSelfTest();
+    if (m_Playtest.enabled) RunPlaytest();
     m_Time += dt;
     m_FpsAccum += dt;
     m_FpsFrames++;
@@ -130,6 +134,7 @@ void Editor::Update(float dt)
     EditorUI::ApplyPlayModeTint(tint);
 
     UpdatePlayMode(dt);
+    if (!m_Playing) m_Animation.Update(m_Scene, dt, false); // edit mode: pose preview (default state)
     HandleShortcuts();
 
     DrawMainMenu();
@@ -144,6 +149,7 @@ void Editor::Update(float dt)
     DrawLighting();
     DrawProject();
     DrawConsole();
+    DrawAnimator();
     DrawToasts(dt);
     DrawAboutPopup();
     if (m_ShowDemo) ImGui::ShowDemoWindow(&m_ShowDemo);
@@ -438,6 +444,11 @@ void Editor::DrawMainMenu()
                 if (ImGui::MenuItem(name)) ImGui::SetWindowFocus(name);
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Animation"))
+        {
+            if (ImGui::MenuItem("Animator")) m_FocusAnimator = true;
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Rendering"))
         {
             if (ImGui::MenuItem("Lighting")) ImGui::SetWindowFocus("Lighting");
@@ -593,6 +604,7 @@ void Editor::BuildDefaultLayout(ImGuiID dockspace)
 
     ImGui::DockBuilderDockWindow("Scene", center);
     ImGui::DockBuilderDockWindow("Game", center);
+    ImGui::DockBuilderDockWindow("Animator", center);
     ImGui::DockBuilderDockWindow("Hierarchy", left);
     ImGui::DockBuilderDockWindow("Inspector", right);
     ImGui::DockBuilderDockWindow("Lighting", right);
@@ -1024,6 +1036,7 @@ void Editor::EnterPlayMode()
         return mesh ? &mesh->data : nullptr;
     });
     m_Scripts->SetPhysics(&m_Physics);
+    m_Animation.Reset();
     m_Scripts->BeginPlay(&m_Scene);
 }
 
@@ -1032,6 +1045,7 @@ void Editor::ExitPlayMode()
     if (!m_Playing) return;
     m_Scripts->EndPlay();
     m_Physics.End();
+    m_Animation.Reset();
     m_Scene = m_EditModeScene; // changes made in play mode are discarded, like Unity
     m_Playing = false;
     m_Paused = false;
@@ -1051,6 +1065,9 @@ void Editor::UpdatePlayMode(float dt)
     m_Physics.Update(dt, [this] { m_Scripts->FixedTick(m_Physics.fixedDeltaTime); },
                      [this](const std::vector<CollisionEvent>& events) { m_Scripts->DispatchCollisions(events); });
     m_Scripts->Tick(std::min(dt, 0.1f), m_PlayTime, m_PlayFrame++);
+    // Unity order: Update -> animation (root motion) -> LateUpdate (cameras follow the animated result).
+    m_Animation.Update(m_Scene, std::min(dt, 0.1f), true);
+    m_Scripts->LateTick();
 }
 
 // Maps Unity KeyCode values (used by TheEngine.KeyCode) to ImGui keys. Input only reaches scripts
@@ -1090,6 +1107,92 @@ void Editor::GatherScriptInput()
     in.mouseDX = active ? io.MouseDelta.x : 0.0f;
     in.mouseDY = active ? io.MouseDelta.y : 0.0f;
     in.wheel = active ? io.MouseWheel : 0.0f;
+
+    // --playtest: keys held for the whole session.
+    if (m_Playtest.enabled && m_Playing)
+        for (int code : m_Playtest.keys)
+            if (code >= 0 && code < ScriptInput::kKeyCount)
+            {
+                in.keyDown[code] = !in.key[code];
+                in.key[code] = true;
+            }
+}
+
+void Editor::EnablePlaytest(float seconds, const std::vector<int>& heldKeys, const std::string& captureDir)
+{
+    m_Playtest.enabled = true;
+    m_Playtest.seconds = seconds;
+    m_Playtest.keys = heldKeys;
+    m_Playtest.captureDir = captureDir;
+}
+
+void Editor::RunPlaytest()
+{
+    Playtest& p = m_Playtest;
+    ++p.frames;
+    if (!p.started)
+    {
+        if (p.frames < 30 || m_Scripts->IsCompiling()) return;
+        if (m_Scripts->HasCompileErrors())
+        {
+            LOG_ERROR("[playtest] scripts have compile errors");
+            m_WantsQuit = true;
+            return;
+        }
+        // Editor screenshot with the Animator window showing the selected object's controller.
+        ++p.readyFrames;
+        if (!p.captureDir.empty() && p.readyFrames < 30)
+        {
+            if (p.readyFrames == 1)
+                for (const Entity& e : m_Scene.entities)
+                    if (e.animator.enabled) { Select(e.id); break; }
+            m_FocusAnimator = true;
+            return;
+        }
+        if (!p.captureDir.empty() && p.readyFrames == 30) { m_Vk->RequestScreenshot(p.captureDir + "/editor_animator.bmp"); return; }
+        if (!p.captureDir.empty()) m_Renderer->CaptureView(SceneRenderer::SceneViewId, p.captureDir + "/edit_scene.bmp");
+        EnterPlayMode();
+        p.started = true;
+        p.nextLog = 0.0f;
+        return;
+    }
+    if (!m_Playing)
+    {
+        m_WantsQuit = true;
+        return;
+    }
+    if (m_PlayTime >= p.nextLog)
+    {
+        p.nextLog += 0.5f;
+        for (const Entity& e : m_Scene.entities)
+        {
+            if (!e.animator.enabled) continue;
+            const glm::vec3 pos = e.transform.position;
+            std::string state = "-";
+            if (AnimatorInstance* inst = m_Animation.Instance(e.id))
+            {
+                const int s = inst->NextState() >= 0 ? inst->NextState() : inst->CurrentState();
+                if (s >= 0) state = inst->Controller()->states[s].name;
+            }
+            LOG_INFO("[playtest] t=%.2f %s pos (%.3f %.3f %.3f) yaw %.1f state %s fps %.0f", m_PlayTime, e.name.c_str(), pos.x, pos.y, pos.z,
+                     e.transform.euler.y, state.c_str(), m_Fps);
+        }
+        if (!p.captureDir.empty() && m_Renderer->HasTarget(SceneRenderer::GameViewId) && m_PlayTime > 0.0f)
+        {
+            char name[64];
+            std::snprintf(name, sizeof(name), "/play_%02d.bmp", p.captures++);
+            m_Renderer->CaptureView(SceneRenderer::GameViewId, p.captureDir + name);
+        }
+        // Live Animator window (state progress) shortly before the end.
+        if (!p.captureDir.empty() && m_PlayTime + 0.6f >= p.seconds && m_PlayTime + 0.1f < p.seconds) m_FocusAnimator = true;
+    }
+    if (!p.captureDir.empty() && m_PlayTime + 0.1f >= p.seconds && m_PlayTime < p.seconds)
+        m_Vk->RequestScreenshot(p.captureDir + "/editor_animator_live.bmp");
+    if (m_PlayTime >= p.seconds)
+    {
+        ExitPlayMode();
+        m_WantsQuit = true;
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -679,6 +679,7 @@ void Editor::DrawSceneView(float dt)
     const bool open = ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
     m_SceneViewVisible = open;
+    m_SceneDockId = ImGui::GetWindowDockID();
     if (!open)
     {
         m_SceneViewHovered = false;

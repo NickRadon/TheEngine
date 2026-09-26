@@ -43,6 +43,41 @@ namespace
     const glm::vec3 kFaceUp[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
 }
 
+void SceneRenderer::ResetStats()
+{
+    m_DrawCalls = 0;
+    m_Triangles = 0;
+    m_SkinCursor = 0;
+    m_SkinOffsets.clear();
+}
+
+void SceneRenderer::UsePipelines(VkCommandBuffer cmd, VkPipeline normal, VkPipeline skinned)
+{
+    m_ActiveNormal = normal;
+    m_ActiveSkinned = skinned;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, normal);
+    m_BoundPipeline = normal;
+}
+
+uint32_t SceneRenderer::UploadPalette(EntityId id, const std::vector<glm::mat4>& palette)
+{
+    // Each skinned object's joints are uploaded once per frame and shared by all passes and views.
+    auto it = m_SkinOffsets.find(id);
+    if (it != m_SkinOffsets.end()) return it->second;
+    const VkDeviceSize bytes = palette.size() * sizeof(glm::mat4);
+    const VkDeviceSize range = 256 * sizeof(glm::mat4) * 4; // descriptor range (1024 joints)
+    if (palette.size() > 1024 || m_SkinCursor + range > kSkinBufferSize)
+    {
+        LOG_WARN("Skinning buffer full; skipping a skinned mesh");
+        return ~0u;
+    }
+    const uint32_t offset = static_cast<uint32_t>(m_SkinCursor);
+    std::memcpy(static_cast<uint8_t*>(m_SkinBuffer[m_Vk->FrameIndex()].mapped) + offset, palette.data(), bytes);
+    m_SkinCursor += (bytes + 255) & ~VkDeviceSize(255);
+    m_SkinOffsets[id] = offset;
+    return offset;
+}
+
 VkDescriptorSet SceneRenderer::Allocate(VkDescriptorSetLayout layout)
 {
     VkDescriptorSetAllocateInfo alloc{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -134,7 +169,7 @@ void SceneRenderer::RenderLocalShadows(VkCommandBuffer cmd, const Scene& scene, 
         vkCmdBeginRendering(cmd, &info);
         vkCmdSetViewport(cmd, 0, 1, &viewport);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipeline);
+        UsePipelines(cmd, m_ShadowPipeline, m_ShadowSkinnedPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SceneLayout, 0, 1, &uboSet, 0, nullptr);
         for (const Entity& e : scene.entities)
         {

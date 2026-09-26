@@ -91,6 +91,14 @@ struct ColliderComponent
     float bounciness = 0.0f;
 };
 
+// Unity: Animator. Plays an Animator Controller on the skinned mesh of this object (or its children).
+struct AnimatorComponent
+{
+    bool enabled = false;
+    std::string controller;      // .controller asset
+    bool applyRootMotion = true; // move the object with the animation's root motion (play mode)
+};
+
 // Unity: Reflection Probe. Captures the scene around it into a cube map used for reflections inside its box.
 struct ReflectionProbeComponent
 {
@@ -173,6 +181,7 @@ struct Entity
     RigidbodyComponent rigidbody;
     ColliderComponent collider;
     ReflectionProbeComponent reflectionProbe;
+    AnimatorComponent animator;
     VolumeComponent volume;
 
     // Prefab link: every entity of an instance has the local id it has inside the prefab; the instance root also

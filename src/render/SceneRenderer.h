@@ -9,7 +9,9 @@
 
 #include <glm/glm.hpp>
 
+#include <functional>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -126,7 +128,12 @@ public:
     VkSampleCountFlagBits MsaaSamples() const { return m_Samples; }
     uint32_t Triangles() const { return m_Triangles; }
     int ShadowedLocalLights() const { return m_LocalShadowCount; }
-    void ResetStats() { m_DrawCalls = 0; m_Triangles = 0; }
+    // Once per frame before rendering: resets statistics and the skinning buffer.
+    void ResetStats();
+
+    // Joint matrices for skinned mesh entities (provided by the AnimationSystem).
+    using PaletteProvider = std::function<const std::vector<glm::mat4>*(EntityId)>;
+    void SetPaletteProvider(PaletteProvider provider) { m_Palettes = std::move(provider); }
 
     // Direction towards the sun derived from the first active directional light.
     static bool FindSun(const Scene& scene, glm::vec3& dirToSun, glm::vec3& color, float& intensity, EntityId* sunEntity = nullptr);
@@ -185,7 +192,11 @@ private:
     VkPipeline CreatePipeline(VkShaderModule vert, VkShaderModule frag, VkPipelineLayout layout,
                               VkFormat colorFormat, VkFormat depthFormat, bool vertexInput,
                               bool depthTest, bool depthWrite, bool blend, VkPolygonMode polygon,
-                              VkCullModeFlags cull, float depthBias, VkSampleCountFlagBits samples, bool additive = false);
+                              VkCullModeFlags cull, float depthBias, VkSampleCountFlagBits samples, bool additive = false,
+                              bool skinned = false);
+    // Selects the pipelines used by DrawEntity for static and skinned meshes (binds the static one).
+    void UsePipelines(VkCommandBuffer cmd, VkPipeline normal, VkPipeline skinned);
+    uint32_t UploadPalette(EntityId id, const std::vector<glm::mat4>& palette);
     void DestroyTarget(Target& t);
     VkDescriptorSet Allocate(VkDescriptorSetLayout layout);
     void WriteImageSet(VkDescriptorSet set, VkImageView a, VkSampler sa, VkImageView b, VkSampler sb);
@@ -237,6 +248,22 @@ private:
     VkPipeline m_PrefilterPipeline = VK_NULL_HANDLE;
     VkPipeline m_BloomDownPipeline = VK_NULL_HANDLE;
     VkPipeline m_BloomUpPipeline = VK_NULL_HANDLE;
+    // Skinned variants
+    VkPipeline m_MeshSkinnedPipeline = VK_NULL_HANDLE;
+    VkPipeline m_WireSkinnedPipeline = VK_NULL_HANDLE;
+    VkPipeline m_MaskSkinnedPipeline = VK_NULL_HANDLE;
+    VkPipeline m_ShadowSkinnedPipeline = VK_NULL_HANDLE;
+    VkPipeline m_NormalsSkinnedPipeline = VK_NULL_HANDLE;
+    VkPipeline m_ActiveNormal = VK_NULL_HANDLE, m_ActiveSkinned = VK_NULL_HANDLE, m_BoundPipeline = VK_NULL_HANDLE;
+
+    // Skinning: joint matrices of every skinned mesh this frame (one storage buffer per frame in flight).
+    static constexpr VkDeviceSize kSkinBufferSize = 16 * 1024 * 1024;
+    VkDescriptorSetLayout m_SkinLayout = VK_NULL_HANDLE;
+    GpuBuffer m_SkinBuffer[VulkanContext::kFramesInFlight];
+    VkDescriptorSet m_SkinSet[VulkanContext::kFramesInFlight] = {};
+    VkDeviceSize m_SkinCursor = 0;
+    std::unordered_map<EntityId, uint32_t> m_SkinOffsets;
+    PaletteProvider m_Palettes;
 
     // Cascaded shadow map shared by all views (views render sequentially in one command buffer).
     static constexpr uint32_t kCascades = 4;

@@ -30,7 +30,7 @@ struct GpuMaterial
     bool hasNormalMap = false;
 };
 
-// Imported model (glTF). Every glTF primitive becomes one mesh ("path#index").
+// Imported model (glTF or FBX). Every glTF primitive / FBX mesh material part becomes one mesh ("path#index").
 struct ModelNode
 {
     std::string name;
@@ -46,8 +46,13 @@ struct ModelAsset
     std::vector<ModelNode> nodes;         // parents always precede children
     std::vector<std::string> meshMaterials; // .mat path per mesh ("" = default)
     int meshCount = 0;
+    std::shared_ptr<const Skeleton> skeleton; // FBX rigs (skinned meshes); bones are not scene objects
+    bool hasAnimations = false;
     bool valid = false;
 };
+
+// FBX import (anim/FbxImport.cpp): meshes (skinned or static), materials and the skeleton.
+bool ImportFbxModel(const std::string& path, std::vector<MeshData>& meshes, ModelAsset& model);
 
 // Loads and caches GPU resources referenced by path (textures, materials, meshes, models) and reloads
 // them when the files change on disk.

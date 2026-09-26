@@ -22,11 +22,12 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
     VkDescriptorPoolSize sizes[] = {
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64 },
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 768 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 8 },
     };
     VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     poolInfo.maxSets = 320;
-    poolInfo.poolSizeCount = 2;
+    poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = sizes;
     vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_DescriptorPool);
 
@@ -61,10 +62,16 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
     finalLayout.pBindings = finalBindings;
     vkCreateDescriptorSetLayout(device, &finalLayout, nullptr, &m_FinalLayout);
 
+    VkDescriptorSetLayoutBinding skinBinding{ 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr };
+    VkDescriptorSetLayoutCreateInfo skinLayout{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    skinLayout.bindingCount = 1;
+    skinLayout.pBindings = &skinBinding;
+    vkCreateDescriptorSetLayout(device, &skinLayout, nullptr, &m_SkinLayout);
+
     VkPushConstantRange scenePush{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants) };
-    VkDescriptorSetLayout sceneSets[2] = { m_UboLayout, resources->MaterialLayout() };
+    VkDescriptorSetLayout sceneSets[3] = { m_UboLayout, resources->MaterialLayout(), m_SkinLayout };
     VkPipelineLayoutCreateInfo sceneLayout{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-    sceneLayout.setLayoutCount = 2;
+    sceneLayout.setLayoutCount = 3;
     sceneLayout.pSetLayouts = sceneSets;
     sceneLayout.pushConstantRangeCount = 1;
     sceneLayout.pPushConstantRanges = &scenePush;
@@ -197,6 +204,20 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
         WriteImage(set, 4, m_EnvCubes.view, m_EnvSampler);
     };
     for (uint32_t f = 0; f < VulkanContext::kFramesInFlight; ++f) makeUboSet(m_EnvUbo[f], m_EnvUboSet[f]);
+    for (uint32_t f = 0; f < VulkanContext::kFramesInFlight; ++f)
+    {
+        m_SkinBuffer[f] = vk->CreateBuffer(kSkinBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_SkinSet[f] = allocate(m_SkinLayout);
+        VkDescriptorBufferInfo info{ m_SkinBuffer[f].buffer, 0, 256 * sizeof(glm::mat4) * 4 };
+        VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = m_SkinSet[f];
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+        write.pBufferInfo = &info;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
     m_PrefilterSet = allocate(m_CompositeLayout);
     WriteImageSet(m_PrefilterSet, m_EnvSource.view, m_EnvSampler, m_EnvSource.view, m_EnvSampler);
     for (Target& t : m_Targets)
@@ -231,6 +252,10 @@ void SceneRenderer::Shutdown()
                           m_PrefilterPipeline, m_BloomDownPipeline, m_BloomUpPipeline })
         if (p) vkDestroyPipeline(device, p, nullptr);
     for (auto& b : m_EnvUbo) m_Vk->DestroyBuffer(b);
+    for (auto& b : m_SkinBuffer) m_Vk->DestroyBuffer(b);
+    for (VkPipeline p : { m_MeshSkinnedPipeline, m_WireSkinnedPipeline, m_MaskSkinnedPipeline, m_ShadowSkinnedPipeline, m_NormalsSkinnedPipeline })
+        if (p) vkDestroyPipeline(device, p, nullptr);
+    vkDestroyDescriptorSetLayout(device, m_SkinLayout, nullptr);
     for (VkImageView v : m_LocalShadowViews) vkDestroyImageView(device, v, nullptr);
     for (VkImageView v : m_EnvFaceViews) vkDestroyImageView(device, v, nullptr);
     for (VkImageView v : m_EnvSourceFaceViews) vkDestroyImageView(device, v, nullptr);
@@ -258,27 +283,42 @@ void SceneRenderer::Shutdown()
 VkPipeline SceneRenderer::CreatePipeline(VkShaderModule vert, VkShaderModule frag, VkPipelineLayout layout,
                                          VkFormat colorFormat, VkFormat depthFormat, bool vertexInput,
                                          bool depthTest, bool depthWrite, bool blend, VkPolygonMode polygon,
-                                         VkCullModeFlags cull, float depthBias, VkSampleCountFlagBits samples, bool additive)
+                                         VkCullModeFlags cull, float depthBias, VkSampleCountFlagBits samples, bool additive,
+                                         bool skinned)
 {
     VkPipelineShaderStageCreateInfo stages[2] = {
         { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr },
         { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr },
     };
 
-    VkVertexInputBindingDescription binding{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
-    VkVertexInputAttributeDescription attrs[3] = {
+    VkVertexInputBindingDescription bindings[2] = {
+        { 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
+        { 1, sizeof(SkinVertex), VK_VERTEX_INPUT_RATE_VERTEX },
+    };
+    VkVertexInputAttributeDescription attrs[5] = {
         { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
         { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
         { 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
+        { 3, 1, VK_FORMAT_R16G16B16A16_UINT, offsetof(SkinVertex, joints) },
+        { 4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SkinVertex, weights) },
     };
+    VkVertexInputAttributeDescription depthSkinned[3] = { attrs[0], attrs[3], attrs[4] };
     VkPipelineVertexInputStateCreateInfo vi{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     if (vertexInput)
     {
-        vi.vertexBindingDescriptionCount = 1;
-        vi.pVertexBindingDescriptions = &binding;
-        // Depth-only pipelines only consume the position.
-        vi.vertexAttributeDescriptionCount = frag ? 3 : 1;
-        vi.pVertexAttributeDescriptions = attrs;
+        vi.vertexBindingDescriptionCount = skinned ? 2 : 1;
+        vi.pVertexBindingDescriptions = bindings;
+        // Depth-only pipelines only consume the position (and skin influences).
+        if (skinned)
+        {
+            vi.vertexAttributeDescriptionCount = frag ? 5 : 3;
+            vi.pVertexAttributeDescriptions = frag ? attrs : depthSkinned;
+        }
+        else
+        {
+            vi.vertexAttributeDescriptionCount = frag ? 3 : 1;
+            vi.pVertexAttributeDescriptions = attrs;
+        }
     }
 
     VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
@@ -381,8 +421,10 @@ void SceneRenderer::CreatePipelines()
     VkShaderModule prefilter = m_Vk->LoadShader("prefilter.frag");
     VkShaderModule bloomDown = m_Vk->LoadShader("bloom_down.frag");
     VkShaderModule bloomUp = m_Vk->LoadShader("bloom_up.frag");
+    VkShaderModule meshSkinned = m_Vk->LoadShader("mesh_skinned.vert");
+    VkShaderModule shadowSkinned = m_Vk->LoadShader("shadow_skinned.vert");
     const VkShaderModule all[] = { fullscreen, sky, meshVert, meshFrag, grid, mask, composite, shadow, normals, ssao, blur,
-                                   skyCube, remap, prefilter, bloomDown, bloomUp };
+                                   skyCube, remap, prefilter, bloomDown, bloomUp, meshSkinned, shadowSkinned };
     for (VkShaderModule m : all)
         if (!m)
         {
@@ -413,6 +455,17 @@ void SceneRenderer::CreatePipelines()
                                     false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
     m_BlurPipeline = CreatePipeline(fullscreen, blur, m_PostLayout, kAoFormat, VK_FORMAT_UNDEFINED, false,
                                     false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
+    m_MeshSkinnedPipeline = CreatePipeline(meshSkinned, meshFrag, m_SceneLayout, kHdrFormat, kDepthFormat, true,
+                                           true, true, false, fill, VK_CULL_MODE_BACK_BIT, 0.0f, m_Samples, false, true);
+    if (m_Vk->SupportsWireframe())
+        m_WireSkinnedPipeline = CreatePipeline(meshSkinned, meshFrag, m_SceneLayout, kHdrFormat, kDepthFormat, true,
+                                               true, false, false, VK_POLYGON_MODE_LINE, VK_CULL_MODE_NONE, -1.0f, m_Samples, false, true);
+    m_MaskSkinnedPipeline = CreatePipeline(meshSkinned, mask, m_SceneLayout, kMaskFormat, VK_FORMAT_UNDEFINED, true,
+                                           false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one, false, true);
+    m_ShadowSkinnedPipeline = CreatePipeline(shadowSkinned, VK_NULL_HANDLE, m_SceneLayout, VK_FORMAT_UNDEFINED, kShadowFormat, true,
+                                             true, true, false, fill, VK_CULL_MODE_NONE, 1.25f, one, false, true);
+    m_NormalsSkinnedPipeline = CreatePipeline(meshSkinned, normals, m_SceneLayout, kNormalFormat, kDepthFormat, true,
+                                              true, true, false, fill, VK_CULL_MODE_BACK_BIT, 0.0f, one, false, true);
     m_SkyCubePipeline = CreatePipeline(fullscreen, skyCube, m_UboPushLayout, kHdrFormat, VK_FORMAT_UNDEFINED, false,
                                        false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
     m_RemapPipeline = CreatePipeline(fullscreen, remap, m_TexPushLayout, kHdrFormat, VK_FORMAT_UNDEFINED, false,
@@ -674,6 +727,22 @@ void SceneRenderer::DrawEntity(VkCommandBuffer cmd, const Scene& scene, const En
     const Mesh* mesh = m_Res->GetMesh(mr.mesh);
     if (!mesh || !mesh->indexCount) return;
 
+    // Skinned meshes use the skinned pipeline variant and their joint matrices.
+    const std::vector<glm::mat4>* palette = mesh->data.Skinned() && m_Palettes && m_ActiveSkinned ? m_Palettes(e.id) : nullptr;
+    if (palette && palette->size() != mesh->data.jointBones.size()) palette = nullptr;
+    const VkPipeline pipeline = palette ? m_ActiveSkinned : m_ActiveNormal;
+    if (pipeline && pipeline != m_BoundPipeline)
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        m_BoundPipeline = pipeline;
+    }
+    if (palette)
+    {
+        const uint32_t offset = UploadPalette(e.id, *palette);
+        if (offset == ~0u) return;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SceneLayout, 2, 1, &m_SkinSet[m_Vk->FrameIndex()], 1, &offset);
+    }
+
     PushConstants pc{};
     pc.model = scene.WorldMatrix(e.id);
     pc.extra = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -702,6 +771,7 @@ void SceneRenderer::DrawEntity(VkCommandBuffer cmd, const Scene& scene, const En
     vkCmdPushConstants(cmd, m_SceneLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &mesh->vertexBuffer.buffer, &offset);
+    if (palette) vkCmdBindVertexBuffers(cmd, 1, 1, &mesh->skinBuffer.buffer, &offset);
     vkCmdBindIndexBuffer(cmd, mesh->indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, mesh->indexCount, 1, 0, 0, 0);
     m_DrawCalls++;
@@ -800,7 +870,7 @@ void SceneRenderer::RenderShadows(VkCommandBuffer cmd, const Scene& scene, VkDes
         vkCmdBeginRendering(cmd, &info);
         vkCmdSetViewport(cmd, 0, 1, &viewport);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipeline);
+        UsePipelines(cmd, m_ShadowPipeline, m_ShadowSkinnedPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SceneLayout, 0, 1, &uboSet, 0, nullptr);
         for (const Entity& e : scene.entities)
         {
@@ -858,7 +928,7 @@ void SceneRenderer::RenderSsao(VkCommandBuffer cmd, Target& t, const Scene& scen
         vkCmdBeginRendering(cmd, &info);
         vkCmdSetViewport(cmd, 0, 1, &flipped);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_NormalsPipeline);
+        UsePipelines(cmd, m_NormalsPipeline, m_NormalsSkinnedPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SceneLayout, 0, 1, &uboSet, 0, nullptr);
         for (const Entity& e : scene.entities)
         {
@@ -1077,7 +1147,7 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
         const bool wire = (rv.shading == ShadingMode::Wireframe || rv.shading == ShadingMode::ShadedWireframe) && m_WirePipeline;
         if (rv.shading != ShadingMode::Wireframe || !m_WirePipeline)
         {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MeshPipeline);
+            UsePipelines(cmd, m_MeshPipeline, m_MeshSkinnedPipeline);
             for (const Entity& e : scene.entities)
             {
                 if (!e.meshRenderer.enabled || !scene.IsActiveInHierarchy(e.id)) continue;
@@ -1086,7 +1156,7 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
         }
         if (wire)
         {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_WirePipeline);
+            UsePipelines(cmd, m_WirePipeline, m_WireSkinnedPipeline);
             const glm::vec4 wireColor = rv.shading == ShadingMode::Wireframe ? glm::vec4(0.9f, 0.9f, 0.9f, 1.0f)
                                                                                : glm::vec4(0.02f, 0.02f, 0.02f, 1.0f);
             for (const Entity& e : scene.entities)
@@ -1123,7 +1193,7 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
         {
             vkCmdSetViewport(cmd, 0, 1, &viewport);
             vkCmdSetScissor(cmd, 0, 1, &scissor);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MaskPipeline);
+            UsePipelines(cmd, m_MaskPipeline, m_MaskSkinnedPipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SceneLayout, 0, 1, &t.uboSet[frame], 0, nullptr);
             for (const Entity& e : scene.entities)
             {

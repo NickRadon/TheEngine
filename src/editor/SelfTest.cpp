@@ -726,6 +726,145 @@ void Editor::EnableSelfTest(const std::string& captureDir)
         return false;
     } });
 
+    t.steps.push_back({ "animation: controller state machine, blend trees, root motion", [this, &t](int frame) {
+        // The Animator window opens a controller and draws its graph for a few frames first.
+        if (frame == 0)
+        {
+            AnimatorController().Save("Assets/_window.controller");
+            OpenAnimatorController("Assets/_window.controller");
+            return false;
+        }
+        if (frame < 5) return false;
+        t.Check(EditedController() != nullptr, "Animator window opens Animator Controller assets");
+        m_AnimCtrlPath.clear();
+        std::error_code removeError;
+        std::filesystem::remove("Assets/_window.controller", removeError);
+
+        // Synthetic rig and clips (the FBX importer is exercised by projects with real assets).
+        Skeleton skeleton;
+        skeleton.names = { "root", "pelvis" };
+        skeleton.parents = { -1, 0 };
+        skeleton.rest.resize(2);
+        skeleton.rest[1].t = glm::vec3(0.0f, 1.0f, 0.0f);
+        skeleton.index = { { "root", 0 }, { "pelvis", 1 } };
+        skeleton.root = 0;
+        skeleton.pelvis = 1;
+
+        auto makeClip = [&](const char* name, glm::vec2 velocity) {
+            AnimationClip c;
+            c.name = name;
+            c.fps = 30.0f;
+            c.duration = 1.0f;
+            c.frameCount = 31;
+            for (int b = 0; b < 2; ++b)
+            {
+                AnimationClip::Track tr;
+                tr.bone = skeleton.names[b];
+                tr.rest = skeleton.rest[b];
+                tr.frames.assign(31, skeleton.rest[b]);
+                c.tracks.push_back(tr);
+                c.trackIndex[tr.bone] = b;
+            }
+            for (int f = 0; f < 31; ++f)
+            {
+                const glm::vec2 xz = velocity * (f / 30.0f);
+                c.tracks[0].frames[f].t = glm::vec3(xz.x, 0.0f, xz.y);
+                c.rootXZ.push_back(xz);
+                c.rootYaw.push_back(0.0f);
+            }
+            c.rootTrack = 0;
+            c.hasRootMotion = glm::length(velocity) > 0.0f;
+            c.averageSpeed = glm::length(velocity);
+            return c;
+        };
+        ClipLibrary& clips = m_Animation.Clips();
+        clips.Add("test:idle", makeClip("idle", { 0.0f, 0.0f }));
+        clips.Add("test:fwd", makeClip("fwd", { 0.0f, -2.0f }));
+        clips.Add("test:right", makeClip("right", { 2.0f, 0.0f }));
+        clips.Add("test:bwd", makeClip("bwd", { 0.0f, 2.0f }));
+        clips.Add("test:left", makeClip("left", { -2.0f, 0.0f }));
+
+        AnimatorController c;
+        c.params = { { "Speed", AnimParamType::Float, 0.0f }, { "X", AnimParamType::Float, 0.0f }, { "Y", AnimParamType::Float, 0.0f },
+                     { "Stop", AnimParamType::Trigger, 0.0f } };
+        AnimState idle;
+        idle.name = "Idle";
+        idle.clip = "test:idle";
+        AnimState move;
+        move.name = "Move";
+        move.type = AnimMotionType::BlendTree2D;
+        move.paramX = "X";
+        move.paramY = "Y";
+        move.children = { { "test:fwd", 0, { 0, 1 } }, { "test:right", 0, { 1, 0 } }, { "test:bwd", 0, { 0, -1 } }, { "test:left", 0, { -1, 0 } } };
+        c.states = { idle, move };
+        c.defaultState = "Idle";
+        AnimTransition go;
+        go.from = "Idle";
+        go.to = "Move";
+        go.duration = 0.1f;
+        go.conditions = { { "Speed", AnimConditionMode::Greater, 0.1f } };
+        AnimTransition stop;
+        stop.from = AnimatorController::kAnyState;
+        stop.to = "Idle";
+        stop.duration = 0.0f;
+        stop.conditions = { { "Stop", AnimConditionMode::If, 0.0f } };
+        c.transitions = { go, stop };
+
+        // Save / load round trip.
+        const std::string path = "Assets/_test.controller";
+        AnimatorController loaded;
+        const bool io = c.Save(path) && AnimatorController::IsControllerFile(path) && loaded.Load(path) && loaded.states.size() == 2 &&
+                        loaded.states[1].children.size() == 4 && loaded.transitions.size() == 2 && loaded.transitions[1].from == AnimatorController::kAnyState &&
+                        loaded.params[3].type == AnimParamType::Trigger && loaded.defaultState == "Idle";
+        t.Check(io, "Animator Controller assets save and load (states, blend trees, transitions, parameters)");
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+
+        AnimatorInstance a;
+        a.Reset(c);
+        Pose pose;
+        RootMotion motion, total;
+        auto run = [&](float seconds) {
+            total = {};
+            for (float time = 0.0f; time < seconds - 1e-4f; time += 1.0f / 60.0f)
+            {
+                a.Update(1.0f / 60.0f, clips, skeleton, true, pose, motion);
+                total.position += motion.position;
+                total.yaw += motion.yaw;
+            }
+        };
+        run(0.5f);
+        t.Check(a.CurrentState() == 0 && glm::length(total.position) < 1e-4f, "default state plays; no parameters, no transition");
+
+        a.SetParam("Speed", 1.0f);
+        a.SetParam("Y", 1.0f);
+        run(0.2f);
+        t.Check(a.CurrentState() == 1 && a.NextState() < 0, "Speed > 0.1 transitions Idle -> Move (0.1 s blend)");
+        run(1.0f);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "root motion moves forward at the clip's speed (%.3f %.3f m in 1 s)", total.position.x, total.position.z);
+        t.Check(std::fabs(total.position.z + 2.0f) < 0.02f && std::fabs(total.position.x) < 1e-3f, msg);
+        t.Check(glm::length(pose[0].t) < 0.05f, "root motion is removed from the pose (the object moves instead)");
+
+        a.SetParam("X", 1.0f);
+        a.SetParam("Y", 0.0f);
+        run(1.0f);
+        std::snprintf(msg, sizeof(msg), "2D blend tree picks the matching direction (%.3f %.3f)", total.position.x, total.position.z);
+        t.Check(std::fabs(total.position.x - 2.0f) < 0.02f && std::fabs(total.position.z) < 0.02f, msg);
+
+        a.SetParam("X", 0.5f);
+        a.SetParam("Y", 0.5f);
+        run(1.0f);
+        std::snprintf(msg, sizeof(msg), "diagonal input blends neighbours (%.3f %.3f)", total.position.x, total.position.z);
+        t.Check(total.position.x > 0.5f && total.position.z < -0.5f && std::fabs(total.position.x + total.position.z) < 0.05f, msg);
+
+        a.SetParam("Stop", 1.0f);
+        run(1.0f / 60.0f);
+        t.Check(a.CurrentState() == 0 && a.GetParam("Stop") == 0.0f, "Any State trigger transition fires and consumes the trigger");
+
+        return true;
+    } });
+
     t.steps.push_back({ "no errors", [&t](int frame) {
         if (frame < 10) return false;
         const int errors = Log::CountOf(LogLevel::Error) - t.errorsAtStart - t.failures;

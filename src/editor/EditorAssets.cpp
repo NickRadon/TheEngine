@@ -169,6 +169,7 @@ EntityId Editor::InstantiateModel(const std::string& path, EntityId parent, cons
             for (size_t m = 0; m < node.meshes.size(); ++m)
                 setMesh(m_Scene.Create(node.name + " " + std::to_string(m), id).id, node.meshes[m]);
     }
+    if (model->skeleton) m_Scene.Find(root)->animator.enabled = true; // rigged: ready for an Animator Controller
     Select(root);
     m_ScrollToEntity = root;
     Notify("Added " + fs::path(path).filename().string() + " to the scene");
@@ -257,6 +258,11 @@ std::string Editor::CreateAsset(const std::string& folder, const std::string& ki
             ScriptEngine::WriteScriptTemplate(path, cls);
         }
     }
+    else if (kind == "controller")
+    {
+        path = UniquePath(fs::path(folder) / "New Animator Controller.controller");
+        AnimatorController().Save(path);
+    }
     else if (kind == "scene")
     {
         path = UniquePath(fs::path(folder) / "New Scene.scene");
@@ -293,6 +299,7 @@ void Editor::ProjectContextMenu(const std::string& folder)
         if (ImGui::MenuItem("C# Script")) CreateAsset(folder, "script");
         if (ImGui::MenuItem("Material")) CreateAsset(folder, "material");
         if (ImGui::MenuItem("Scene")) CreateAsset(folder, "scene");
+        if (ImGui::MenuItem("Animator Controller")) CreateAsset(folder, "controller");
         ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Import New Asset..."))
@@ -546,6 +553,7 @@ void Editor::DrawProject()
             else if (IsScript(it.path) || ResourceCache::IsTextureFile(it.path)) Platform::OpenWithDefaultApp(it.path);
             else if (ResourceCache::IsModelFile(it.path)) InstantiateModel(it.path, kNullEntity, nullptr);
             else if (Prefab::IsPrefabFile(it.path)) OpenPrefabMode(it.path);
+            else if (AnimatorController::IsControllerFile(it.path)) OpenAnimatorController(it.path);
         }
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) m_SelectedAsset = it.path;
         if (ImGui::BeginPopupContextItem("AssetContext"))
@@ -971,6 +979,13 @@ void Editor::DrawAssetInspector()
             ImGui::Spacing();
             if (ImGui::Button("Add to Scene", ImVec2(-FLT_MIN, 0))) InstantiateModel(path, kNullEntity, nullptr);
         }
+        else if (const AnimationClip* clip = m_Animation.Clips().Get(path))
+        {
+            ImGui::Text("Animation clip: %.2f s at %.0f fps, %d bones", clip->duration, clip->fps, static_cast<int>(clip->tracks.size()));
+            if (clip->hasRootMotion) ImGui::Text("Root motion: %.2f m/s", clip->averageSpeed);
+            else ImGui::TextDisabled("No root motion (in place)");
+            ImGui::TextDisabled("Drag onto the Animator window to create a state.");
+        }
         else
         {
             ImGui::TextColored(ImVec4(1, 0.4f, 0.35f, 1), "Could not import this model (see Console).");
@@ -979,6 +994,16 @@ void Editor::DrawAssetInspector()
     else if (IsScene(path))
     {
         if (ImGui::Button("Open Scene", ImVec2(-FLT_MIN, 0))) OpenScene(path);
+    }
+    else if (AnimatorController::IsControllerFile(path))
+    {
+        if (AnimatorController* c = m_Animation.Controller(path))
+        {
+            ImGui::Text("States: %d   Parameters: %d   Transitions: %d", static_cast<int>(c->states.size()), static_cast<int>(c->params.size()),
+                        static_cast<int>(c->transitions.size()));
+            if (ImGui::Button("Open in Animator", ImVec2(-FLT_MIN, 0))) OpenAnimatorController(path);
+            ImGui::TextDisabled("Drag onto an Animator component's Controller field.");
+        }
     }
     else if (Prefab::IsPrefabFile(path))
     {

@@ -95,6 +95,11 @@ bool VulkanContext::Init(GLFWwindow* window)
 
 void VulkanContext::Shutdown()
 {
+    if (m_ScreenshotBuffer.buffer)
+    {
+        vkDeviceWaitIdle(m_Device);
+        DestroyBuffer(m_ScreenshotBuffer);
+    }
     if (!m_Device) return;
     vkDeviceWaitIdle(m_Device);
     for (auto& frame : m_Frames)
@@ -326,7 +331,7 @@ bool VulkanContext::CreateSwapchain()
     info.imageColorSpace = chosen.colorSpace;
     info.imageExtent = extent;
     info.imageArrayLayers = 1;
-    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // + screenshots
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = caps.currentTransform;
     info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -439,7 +444,30 @@ void VulkanContext::BeginSwapchainRendering(VkCommandBuffer cmd, const float cle
 void VulkanContext::EndSwapchainRendering(VkCommandBuffer cmd)
 {
     vkCmdEndRendering(cmd);
-    ImageBarrier(cmd, m_SwapchainImages[m_ImageIndex], VK_IMAGE_ASPECT_COLOR_BIT,
+    VkImage image = m_SwapchainImages[m_ImageIndex];
+    if (!m_ScreenshotPath.empty())
+    {
+        // Copy the finished frame to a host buffer; written to disk after the submit (EndFrame).
+        const VkDeviceSize size = static_cast<VkDeviceSize>(m_SwapchainExtent.width) * m_SwapchainExtent.height * 4;
+        if (m_ScreenshotBuffer.size < size)
+        {
+            DestroyBuffer(m_ScreenshotBuffer);
+            m_ScreenshotBuffer = CreateBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+        ImageBarrier(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        region.imageExtent = { m_SwapchainExtent.width, m_SwapchainExtent.height, 1 };
+        vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_ScreenshotBuffer.buffer, 1, &region);
+        ImageBarrier(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        m_ScreenshotRecorded = true;
+        return;
+    }
+    ImageBarrier(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT,
                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
@@ -476,6 +504,45 @@ void VulkanContext::EndFrame()
     present.pImageIndices = &m_ImageIndex;
     VkResult r = vkQueuePresentKHR(m_Queue, &present);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) m_SwapchainDirty = true;
+
+    if (m_ScreenshotRecorded)
+    {
+        vkQueueWaitIdle(m_Queue);
+        const uint32_t w = m_SwapchainExtent.width, h = m_SwapchainExtent.height;
+        const bool bgr = m_SwapchainFormat == VK_FORMAT_B8G8R8A8_UNORM || m_SwapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+        const uint32_t rowSize = (w * 3 + 3) & ~3u;
+        std::vector<uint8_t> file(54 + static_cast<size_t>(rowSize) * h, 0);
+        auto put32 = [&](size_t at, uint32_t v) { for (int i = 0; i < 4; ++i) file[at + i] = static_cast<uint8_t>(v >> (8 * i)); };
+        file[0] = 'B';
+        file[1] = 'M';
+        put32(2, static_cast<uint32_t>(file.size()));
+        put32(10, 54);
+        put32(14, 40);
+        put32(18, w);
+        put32(22, h);
+        file[26] = 1;
+        file[28] = 24;
+        const uint8_t* src = static_cast<const uint8_t*>(m_ScreenshotBuffer.mapped);
+        for (uint32_t y = 0; y < h; ++y)
+        {
+            const uint8_t* row = src + static_cast<size_t>(h - 1 - y) * w * 4;
+            uint8_t* dst = file.data() + 54 + static_cast<size_t>(y) * rowSize;
+            for (uint32_t x = 0; x < w; ++x)
+            {
+                dst[x * 3 + 0] = row[x * 4 + (bgr ? 0 : 2)];
+                dst[x * 3 + 1] = row[x * 4 + 1];
+                dst[x * 3 + 2] = row[x * 4 + (bgr ? 2 : 0)];
+            }
+        }
+        FILE* f = std::fopen(m_ScreenshotPath.c_str(), "wb");
+        if (f)
+        {
+            std::fwrite(file.data(), 1, file.size(), f);
+            std::fclose(f);
+        }
+        m_ScreenshotPath.clear();
+        m_ScreenshotRecorded = false;
+    }
 
     m_FrameIndex = (m_FrameIndex + 1) % kFramesInFlight;
 }

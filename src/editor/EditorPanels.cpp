@@ -766,6 +766,57 @@ void Editor::DrawInspector()
         }
     }
 
+    // Animator
+    if (e->animator.enabled)
+    {
+        bool remove = false;
+        if (EditorUI::ComponentHeader("Animator", Icon::Play, nullptr, &remove))
+        {
+            AnimatorComponent& a = e->animator;
+            EditorUI::PropertyLabel("Controller");
+            const std::string label = a.controller.empty() ? "None (Animator Controller)" : std::filesystem::path(a.controller).stem().string();
+            const float bw = ImGui::GetContentRegionAvail().x;
+            if (ImGui::Button(label.c_str(), ImVec2(bw - 104, 0)) && !a.controller.empty()) OpenAnimatorController(a.controller);
+            if (!a.controller.empty()) ImGui::SetItemTooltip("%s (click to open in the Animator window)", a.controller.c_str());
+            if (ImGui::BeginDragDropTarget())
+            {
+                std::string asset;
+                if (AcceptAssetDrop(".controller", asset)) { MarkEdited(); a.controller = asset; }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::SameLine(0, 4);
+            if (ImGui::Button("New", ImVec2(48, 0)))
+            {
+                const std::string path = CreateAsset("Assets/Animators", "controller");
+                if (!path.empty())
+                {
+                    MarkEdited();
+                    m_Scene.Find(ActiveEntity())->animator.controller = path;
+                    OpenAnimatorController(path);
+                }
+                e = m_Scene.Find(ActiveEntity());
+            }
+            ImGui::SameLine(0, 4);
+            if (ImGui::Button("Open", ImVec2(48, 0)) && !e->animator.controller.empty()) OpenAnimatorController(e->animator.controller);
+            EditorUI::PropertyLabel("Apply Root Motion");
+            if (ImGui::Checkbox("##rootMotion", &e->animator.applyRootMotion)) MarkEdited();
+            if (m_Playing)
+                if (AnimatorInstance* inst = m_Animation.Instance(e->id))
+                {
+                    const AnimatorController* ctrl = inst->Controller();
+                    const int cur = inst->CurrentState();
+                    ImGui::TextDisabled("State: %s%s%s", cur >= 0 ? ctrl->states[cur].name.c_str() : "-",
+                                        inst->NextState() >= 0 ? " -> " : "", inst->NextState() >= 0 ? ctrl->states[inst->NextState()].name.c_str() : "");
+                }
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->animator.enabled = false;
+        }
+    }
+
     // Reflection Probe
     if (e->reflectionProbe.enabled)
     {
@@ -923,6 +974,7 @@ void Editor::DrawInspector()
             { "Mesh Renderer", &e->meshRenderer.enabled },
             { "Light", &e->light.enabled },
             { "Camera", &e->camera.enabled },
+            { "Animator", &e->animator.enabled },
             { "Reflection Probe", &e->reflectionProbe.enabled },
             { "Volume", &e->volume.enabled },
         };

@@ -23,6 +23,7 @@ namespace Log
 
         const char* prefix = level == LogLevel::Error ? "[error] " : level == LogLevel::Warning ? "[warn]  " : "[info]  ";
         std::fprintf(level == LogLevel::Error ? stderr : stdout, "%s%s\n", prefix, buffer);
+        std::fflush(level == LogLevel::Error ? stderr : stdout); // keep logs when piped or killed
 
         const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_Start).count();
         std::lock_guard lock(g_Mutex);

@@ -120,7 +120,8 @@ file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
 
 add_executable(TheEngine ${ENGINE_SOURCES})
 add_dependencies(TheEngine shaders)
-target_include_directories(TheEngine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${EXT}/glm ${EXT}/stb ${EXT}/cgltf)
+target_include_directories(TheEngine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${EXT}/glm ${EXT}/stb ${EXT}/cgltf ${EXT}/ufbx)
+target_sources(TheEngine PRIVATE ${EXT}/ufbx/ufbx.c) # FBX import
 target_compile_definitions(TheEngine PRIVATE
     GLM_ENABLE_EXPERIMENTAL
     GLFW_INCLUDE_NONE

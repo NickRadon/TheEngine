@@ -1,5 +1,6 @@
 #pragma once
 
+#include "anim/AnimationSystem.h"
 #include "editor/EditorCamera.h"
 #include "render/Resources.h"
 #include "render/SceneRenderer.h"
@@ -43,9 +44,26 @@ public:
     void EnableSelfTest(const std::string& captureDir = "");
     int SelfTestFailures() const;
 
+    // Automated play session (--playtest): enters play mode with keys held down, logs animated objects and
+    // captures the Game view, then quits. Keys are Unity KeyCode values.
+    void EnablePlaytest(float seconds, const std::vector<int>& heldKeys, const std::string& captureDir);
+
 private:
     struct SelfTest;
     void RunSelfTest();
+    void RunPlaytest();
+    struct Playtest
+    {
+        bool enabled = false;
+        float seconds = 0.0f;
+        std::vector<int> keys;
+        std::string captureDir;
+        int frames = 0;
+        int readyFrames = 0;
+        bool started = false;
+        float nextLog = 0.0f;
+        int captures = 0;
+    } m_Playtest;
     std::unique_ptr<SelfTest> m_Test;
 
     // --- Panels ---
@@ -65,6 +83,16 @@ private:
     void DrawGameContent();
     void DrawToasts(float dt);
     void DrawAboutPopup();
+
+    // --- Animator window (EditorAnimator.cpp) ---
+    void DrawAnimator();
+    void DrawAnimatorGraph(AnimatorController& c, AnimatorInstance* instance, ImVec2 size);
+    void DrawAnimatorSelection(AnimatorController& c, AnimatorInstance* instance);
+    void OpenAnimatorController(const std::string& path);
+    AnimatorController* EditedController();
+    void SaveEditedController();
+    bool ClipField(const char* id, std::string& clip);
+    const std::vector<std::string>& AnimationFiles();
 
     // --- Scene view helpers ---
     void SceneViewToolbar();
@@ -187,6 +215,7 @@ private:
     bool m_StepRequested = false;
     Scene m_EditModeScene;
     PhysicsWorld m_Physics;
+    AnimationSystem m_Animation;
     float m_PlayTime = 0.0f;
     int m_PlayFrame = 0;
     bool m_GameViewFocused = false;
@@ -281,6 +310,23 @@ private:
         bool hasSaved = false;
     };
     PrefabModeState m_PrefabMode;
+
+    // Animator window
+    std::string m_AnimCtrlPath;
+    bool m_AnimCtrlDirty = false;
+    ImVec2 m_AnimPan{ 60.0f, 60.0f };
+    float m_AnimZoom = 1.0f;
+    std::string m_AnimSelState;
+    int m_AnimSelTransition = -1;
+    std::string m_AnimLinkFrom, m_AnimDragNode, m_AnimContextNode;
+    glm::vec2 m_AnimContextPos{ 0.0f };
+    char m_AnimClipFilter[128] = {};
+    std::vector<std::string> m_AnimFiles;
+    float m_AnimFilesTimer = 0.0f;
+    bool m_FocusAnimator = false;
+    bool m_AnimFrameRequest = false;
+    bool m_AnimatorDocked = false;
+    ImGuiID m_SceneDockId = 0;
     std::vector<std::string> m_PendingDrops;
     std::string m_ScriptPreviewPath;
     std::string m_ScriptPreview;

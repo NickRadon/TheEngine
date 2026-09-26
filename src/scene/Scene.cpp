@@ -451,6 +451,12 @@ std::vector<EntityProperty> SerializeEntity(const Entity& e, bool includeObject)
         add("collider", o);
     }
     {
+        const auto& a = e.animator;
+        std::ostringstream o;
+        o << "animator " << a.enabled << ' ' << std::quoted(a.controller) << ' ' << a.applyRootMotion;
+        add("animator", o);
+    }
+    {
         const auto& p = e.reflectionProbe;
         std::ostringstream o;
         o << "probe " << p.enabled << ' ' << p.size << ' ' << p.boxProjection << ' ' << p.intensity;
@@ -546,6 +552,11 @@ bool ParseEntityLine(Entity& e, const std::string& line)
         int shape = 0;
         in >> c.enabled >> shape >> c.center >> c.size >> c.radius >> c.height >> c.isTrigger >> c.friction >> c.bounciness;
         c.shape = static_cast<ColliderShape>(std::clamp(shape, 0, 3));
+    }
+    else if (key == "animator")
+    {
+        auto& a = e.animator;
+        in >> a.enabled >> std::quoted(a.controller) >> a.applyRootMotion;
     }
     else if (key == "probe")
     {

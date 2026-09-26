@@ -68,7 +68,7 @@ bool ResourceCache::IsTextureFile(const std::string& path)
 bool ResourceCache::IsModelFile(const std::string& path)
 {
     const std::string ext = Lower(fs::path(path).extension().string());
-    return ext == ".gltf" || ext == ".glb";
+    return ext == ".gltf" || ext == ".glb" || ext == ".fbx";
 }
 
 fs::file_time_type ResourceCache::Stamp(const std::string& path)
@@ -129,8 +129,8 @@ void ResourceCache::Shutdown()
     vkDeviceWaitIdle(m_Vk->Device());
     for (auto& [k, e] : m_Textures) DestroyTexture(e.tex);
     for (auto& [k, e] : m_Models)
-        for (Mesh& m : e.meshes) { m_Vk->DestroyBuffer(m.vertexBuffer); m_Vk->DestroyBuffer(m.indexBuffer); }
-    for (auto& [k, m] : m_Builtins) { m_Vk->DestroyBuffer(m.vertexBuffer); m_Vk->DestroyBuffer(m.indexBuffer); }
+        for (Mesh& m : e.meshes) { m_Vk->DestroyBuffer(m.vertexBuffer); m_Vk->DestroyBuffer(m.indexBuffer); m_Vk->DestroyBuffer(m.skinBuffer); }
+    for (auto& [k, m] : m_Builtins) { m_Vk->DestroyBuffer(m.vertexBuffer); m_Vk->DestroyBuffer(m.indexBuffer); m_Vk->DestroyBuffer(m.skinBuffer); }
     FlushPending();
     m_Textures.clear();
     m_Materials.clear();
@@ -318,6 +318,8 @@ Mesh ResourceCache::Upload(MeshData data)
     mesh.vertexBuffer = m_Vk->CreateDeviceBuffer(data.vertices.data(), data.vertices.size() * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     mesh.indexBuffer = m_Vk->CreateDeviceBuffer(data.indices.data(), data.indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     mesh.indexCount = static_cast<uint32_t>(data.indices.size());
+    if (data.Skinned())
+        mesh.skinBuffer = m_Vk->CreateDeviceBuffer(data.skin.data(), data.skin.size() * sizeof(SkinVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     mesh.data = std::move(data);
     return mesh;
 }
@@ -350,6 +352,17 @@ const ModelAsset* ResourceCache::GetModel(const std::string& path)
 
 bool ResourceCache::LoadModel(const std::string& path, ModelAsset& model, std::vector<Mesh>& meshes)
 {
+    if (Lower(fs::path(path).extension().string()) == ".fbx")
+    {
+        std::vector<MeshData> imported;
+        if (!ImportFbxModel(path, imported, model)) return false;
+        for (MeshData& md : imported) meshes.push_back(Upload(std::move(md)));
+        model.meshCount = static_cast<int>(meshes.size());
+        model.valid = model.meshCount > 0;
+        if (model.valid)
+            LOG_INFO("Imported %s (%d meshes, %d bones)", path.c_str(), model.meshCount, model.skeleton ? static_cast<int>(model.skeleton->names.size()) : 0);
+        return model.valid;
+    }
     cgltf_options options{};
     cgltf_data* data = nullptr;
     if (cgltf_parse_file(&options, path.c_str(), &data) != cgltf_result_success)
@@ -596,7 +609,7 @@ void ResourceCache::FlushPending()
     for (Texture& t : m_PendingTextures) DestroyTexture(t);
     if (!m_PendingSets.empty())
         vkFreeDescriptorSets(m_Vk->Device(), m_Pool, static_cast<uint32_t>(m_PendingSets.size()), m_PendingSets.data());
-    for (Mesh& m : m_PendingMeshes) { m_Vk->DestroyBuffer(m.vertexBuffer); m_Vk->DestroyBuffer(m.indexBuffer); }
+    for (Mesh& m : m_PendingMeshes) { m_Vk->DestroyBuffer(m.vertexBuffer); m_Vk->DestroyBuffer(m.indexBuffer); m_Vk->DestroyBuffer(m.skinBuffer); }
     m_PendingTextures.clear();
     m_PendingSets.clear();
     m_PendingMeshes.clear();

@@ -1,10 +1,12 @@
 #pragma once
 
+#include "anim/Animation.h"
 #include "render/VulkanContext.h"
 
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -21,10 +23,23 @@ enum class PrimitiveType : int { None = 0, Cube, Sphere, Capsule, Cylinder, Plan
 const char* PrimitiveName(PrimitiveType type);
 bool PrimitiveFromName(const std::string& name, PrimitiveType& out);
 
+// Skinning stream (second vertex buffer): up to 4 joint influences per vertex.
+struct SkinVertex
+{
+    uint16_t joints[4] = { 0, 0, 0, 0 };
+    float weights[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+};
+
 struct MeshData
 {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    // Skinned meshes: per-vertex influences, the skeleton bone of each joint, and geometry -> bone (bind) matrices.
+    std::vector<SkinVertex> skin;
+    std::vector<int> jointBones;
+    std::vector<glm::mat4> inverseBind;
+    std::shared_ptr<const Skeleton> skeleton;
+    bool Skinned() const { return !skin.empty() && skeleton; }
     glm::vec3 boundsMin{ 0.0f };
     glm::vec3 boundsMax{ 0.0f };
 };
@@ -37,6 +52,7 @@ struct Mesh
     MeshData data;
     GpuBuffer vertexBuffer;
     GpuBuffer indexBuffer;
+    GpuBuffer skinBuffer; // SkinVertex stream for skinned meshes
     uint32_t indexCount = 0;
 };
 

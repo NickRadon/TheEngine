@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "core/Platform.h"
+#include "anim/AnimationSystem.h"
 #include "scene/Prefab.h"
 
 #include <glm/gtc/type_ptr.hpp>
@@ -51,6 +52,8 @@ struct ScriptNativeApi
     void (*PhysicsGravity)(int, float*);
     uint64_t (*EntityInstantiate)(uint64_t, const float*, int);
     uint64_t (*PrefabInstantiate)(const wchar_t*, const float*, int);
+    float (*AnimatorParam)(uint64_t, const wchar_t*, int, float);
+    int (*AnimatorStateName)(uint64_t, wchar_t*, int);
 };
 
 // Managed entry points (TheEngine.Internal.ScriptHost, [UnmanagedCallersOnly]).
@@ -69,6 +72,7 @@ struct ScriptEngine::Api
     void (*SetInstanceEnabled)(int, int) = nullptr;
     void (*FixedTick)(float) = nullptr;
     void (*OnCollision)(uint64_t, uint64_t, int, const float*) = nullptr;
+    void (*LateTick)() = nullptr;
 };
 
 namespace
@@ -213,6 +217,7 @@ namespace
         case 2: return e->camera.enabled ? 1 : 0;
         case 3: return e->rigidbody.enabled ? 1 : 0;
         case 4: return e->collider.enabled ? 1 : 0;
+        case 5: return e->animator.enabled ? 1 : 0;
         default: return 0;
         }
     }
@@ -232,6 +237,8 @@ namespace
         case 6: out[0] = e->camera.fov; break;
         case 7: out[0] = e->collider.isTrigger ? 1.0f : 0.0f; break;
         case 8: out[0] = e->collider.enabled ? 1.0f : 0.0f; break;
+        case 9: out[0] = e->animator.applyRootMotion ? 1.0f : 0.0f; break;
+        case 10: out[0] = e->animator.enabled ? 1.0f : 0.0f; break;
         default: return 0;
         }
         return 1;
@@ -252,6 +259,8 @@ namespace
         case 6: e->camera.fov = in[0]; break;
         case 7: e->collider.isTrigger = in[0] != 0.0f; break;
         case 8: e->collider.enabled = in[0] != 0.0f; break;
+        case 9: e->animator.applyRootMotion = in[0] != 0.0f; break;
+        case 10: e->animator.enabled = in[0] != 0.0f; break;
         }
     }
 
@@ -394,6 +403,36 @@ namespace
         return FinishInstantiate(root, pose, hasPose);
     }
 
+    // op: 0 get, 1 set, 2 reset trigger. Returns the (new) value.
+    float NAnimatorParam(uint64_t id, const wchar_t* name, int op, float value)
+    {
+        AnimationSystem* anim = g_Engine ? g_Engine->GetAnimation() : nullptr;
+        AnimatorInstance* instance = anim ? anim->Instance(static_cast<EntityId>(id)) : nullptr;
+        if (!instance) return 0.0f;
+        const std::string n = Platform::Narrow(name);
+        if (op == 1 && !instance->SetParam(n, value))
+        {
+            static std::string warned;
+            if (warned != n) LOG_WARN("Animator has no parameter named '%s'", n.c_str());
+            warned = n;
+        }
+        if (op == 2) instance->SetParam(n, 0.0f);
+        return instance->GetParam(n);
+    }
+
+    int NAnimatorStateName(uint64_t id, wchar_t* buffer, int capacity)
+    {
+        AnimationSystem* anim = g_Engine ? g_Engine->GetAnimation() : nullptr;
+        AnimatorInstance* instance = anim ? anim->Instance(static_cast<EntityId>(id)) : nullptr;
+        if (!instance || capacity <= 0) return 0;
+        const int state = instance->NextState() >= 0 ? instance->NextState() : instance->CurrentState();
+        if (state < 0) return 0;
+        const std::wstring w = Platform::Widen(instance->Controller()->states[state].name);
+        const int n = std::min(static_cast<int>(w.size()), capacity);
+        std::memcpy(buffer, w.data(), n * sizeof(wchar_t));
+        return n;
+    }
+
     void NPhysicsGravity(int set, float* value)
     {
         PhysicsWorld* physics = P();
@@ -505,6 +544,7 @@ bool ScriptEngine::HostRuntime()
     get(L"SetInstanceEnabled", m_Api->SetInstanceEnabled);
     get(L"FixedTick", m_Api->FixedTick);
     get(L"OnCollision", m_Api->OnCollision);
+    get(L"LateTick", m_Api->LateTick);
     if (!ok) return false;
 
     g_NativeApi = {
@@ -512,7 +552,7 @@ bool ScriptEngine::HostRuntime()
         NEntityCreate, NEntityDestroy, NEntityGetParent, NEntitySetParent, NTransformGet, NTransformSet,
         NHasComponent, NComponentGet, NComponentSet, NInputGetKey, NInputGetMouseButton, NInputGetMouse,
         NComponentAdd, NRigidbodyGet, NRigidbodySet, NRigidbodyAddForce, NPhysicsRaycast, NPhysicsGravity,
-        NEntityInstantiate, NPrefabInstantiate,
+        NEntityInstantiate, NPrefabInstantiate, NAnimatorParam, NAnimatorStateName,
     };
     return m_Api->Initialize(&g_NativeApi) == 1;
 #else
@@ -759,6 +799,13 @@ void ScriptEngine::Tick(float dt, float time, int frame)
 {
     if (!m_Playing) return;
     m_Api->Tick(dt, time, frame);
+    FlushDestroyQueue();
+}
+
+void ScriptEngine::LateTick()
+{
+    if (!m_Playing) return;
+    m_Api->LateTick();
     FlushDestroyQueue();
 }
 
