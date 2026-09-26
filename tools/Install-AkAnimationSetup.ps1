@@ -24,8 +24,13 @@ $rigDir = Join-Path $project 'Assets/AK/Rigs'
 New-Item -ItemType Directory -Force -Path $rigDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $repo 'tests/assets/AE_AK.rig') -Destination (Join-Path $rigDir 'AE_AK.rig') -Force
 
-$controller = @'
-TheEngineAnimator 1
+$locomotionController = Get-Content -LiteralPath (Join-Path $project 'Assets/Animators/Player.controller') -Raw
+if (-not $locomotionController.StartsWith('TheEngineAnimator 1')) {
+    throw 'Expected the original AnimationSetup Player.controller (version 1) for the locomotion base layer.'
+}
+$controller = "TheEngineAnimator 4`nlayer ""Base Layer"" 1 override`n" +
+    $locomotionController.Substring($locomotionController.IndexOf("`n") + 1).TrimEnd() + "`n" + @'
+layer "AK Upper" 1 override @mask "Assets/AK/Masks/UpperBody.mask"
 state "AK Idle" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 1 1 320 140
 default "AK Idle"
 entry 40 140
@@ -33,12 +38,27 @@ any 40 300
 '@
 Set-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Aim.controller') -Value $controller
 
+$maskDir = Join-Path $project 'Assets/AK/Masks'
+New-Item -ItemType Directory -Force -Path $maskDir | Out-Null
+$mask = @'
+TheEngineMask 1
+bone "spine_01"
+bone "ik_hand_gun"
+bone "ik_hand_l"
+bone "ik_hand_r"
+'@
+Set-Content -LiteralPath (Join-Path $maskDir 'UpperBody.mask') -Value $mask
+
 $aimScript = @'
 using TheEngine;
 
-// AK pose preview: hold the right mouse button and move the mouse, or use I/J/K/L.
+// Lower body uses locomotion; the AK first-person clip owns spine_01 and up.
+// WASD moves, Left Ctrl walks, Left Shift runs forward, Q/E turns the body.
+// Hold right mouse and move the mouse, or use I/J/K/L, to aim with the spine.
 public class AKAimController : MonoBehaviour
 {
+    public float turnSpeed = 120f;
+    public float damping = 0.12f;
     public float mouseSensitivity = 3f;
     public float keySpeed = 65f;
     public float maxPitch = 45f;
@@ -57,6 +77,18 @@ public class AKAimController : MonoBehaviour
     void Update()
     {
         if (animator == null) return;
+        float x = Input.GetAxis("Horizontal");
+        float y = Input.GetAxis("Vertical");
+        float length = Mathf.Sqrt(x * x + y * y);
+        if (length > 1f) { x /= length; y /= length; length = 1f; }
+        float gait = Input.GetKey(KeyCode.LeftControl) ? 1f : 2f;
+        if (Input.GetKey(KeyCode.LeftShift) && y > 0.5f && Mathf.Abs(x) < 0.5f) gait = 3f;
+        animator.SetFloat("MoveX", x * gait, damping, Time.deltaTime);
+        animator.SetFloat("MoveY", y * gait, damping, Time.deltaTime);
+        animator.SetFloat("Speed", length * gait);
+        float turn = (Input.GetKey(KeyCode.E) ? 1f : 0f) - (Input.GetKey(KeyCode.Q) ? 1f : 0f);
+        transform.Rotate(0f, -turn * turnSpeed * Time.deltaTime, 0f);
+
         if (Input.GetMouseButton(1))
         {
             pitch += Input.GetAxis("Mouse Y") * mouseSensitivity;
@@ -77,7 +109,7 @@ Set-Content -LiteralPath (Join-Path $project 'Assets/Scripts/AKAimController.cs'
 $scene = Get-Content -LiteralPath $sourceScene -Raw
 $scene = $scene.Replace('name "AnimationSetup"', 'name "AK Aiming"')
 $scene = $scene.Replace('animator 1 "Assets/Animators/Player.controller" 1',
-    'animator 1 "Assets/Animators/AK_Aim.controller" 0 "spine_01,spine_02,spine_03,spine_04,spine_05,neck_01,head" 0 "Assets/AK/Rigs/AE_AK.rig" 1')
+    'animator 1 "Assets/Animators/AK_Aim.controller" 1 "spine_01,spine_02,spine_03,spine_04,spine_05,neck_01,head" 0 "Assets/AK/Rigs/AE_AK.rig" 1')
 $scene = $scene.Replace('script 1 "PlayerController"', 'script 1 "AKAimController"')
 $scene += @'
 entity 9 4 1 "AK Weapon"
