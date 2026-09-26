@@ -16,6 +16,8 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
+#include <sstream>
 
 struct Editor::SelfTest
 {
@@ -1612,8 +1614,25 @@ public class AnimApiDefaults : MonoBehaviour
                                       system.BoneModelMatrix(character.id, "vb_ak_hand_r", gripR);
                 const glm::quat sourceRotation = glm::normalize(glm::quat_cast(glm::mat3(sourceWeapon)));
                 const glm::quat correctedRotation = glm::normalize(glm::quat_cast(glm::mat3(before)));
-                const glm::quat expectedOffset = glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
-                const bool offsetBeforeLook = prepared && std::abs(glm::dot(
+                glm::quat expectedOffset(1, 0, 0, 0);
+                bool hasOffset = false;
+                std::ifstream rigFile(rigPath);
+                std::string rigLine;
+                while (std::getline(rigFile, rigLine))
+                {
+                    std::istringstream row(rigLine);
+                    std::string kind, target, space;
+                    float x, y, z, w;
+                    if (row >> kind && kind == "prerotate" &&
+                        row >> std::quoted(target) >> std::quoted(space) >> x >> y >> z >> w &&
+                        target == "vb_ak_weapon" && space == target)
+                    {
+                        expectedOffset = glm::normalize(glm::quat(w, x, y, z));
+                        hasOffset = true;
+                        break;
+                    }
+                }
+                const bool offsetBeforeLook = prepared && hasOffset && std::abs(glm::dot(
                     glm::normalize(glm::inverse(sourceRotation) * correctedRotation), expectedOffset)) > 0.999f;
                 t.Check(offsetBeforeLook, "AE AK weapon rotation offset follows copy and precedes look");
                 t.Check(prepared && glm::length(glm::vec3(sourceGripL[3] - gripL[3])) < 0.0001f &&

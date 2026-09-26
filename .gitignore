@@ -6,3 +6,4 @@ scripting/ScriptCore/bin/
 scripting/ScriptCore/obj/
 tests/**/bin/
 tests/**/obj/
+tools/mcp/node_modules/
