@@ -1647,6 +1647,24 @@ public class AnimApiDefaults : MonoBehaviour
             const std::filesystem::path rigPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
                                                    "tests/assets/AE_AK.rig";
             const std::string controllerPath = "Assets/_ae_ak_visual.controller";
+            const std::string metricsPath = captureDir + "/ae_ak_metrics.csv";
+            auto recordPose = [&](const char* name, float pitch, float yaw) {
+                glm::mat4 weaponBone(1), handL(1), gripL(1), handR(1), gripR(1);
+                const bool valid = m_Animation.BoneModelMatrix(actorId, "vb_ak_weapon", weaponBone) &&
+                                   m_Animation.BoneModelMatrix(actorId, "hand_l", handL) &&
+                                   m_Animation.BoneModelMatrix(actorId, "vb_ak_hand_l", gripL) &&
+                                   m_Animation.BoneModelMatrix(actorId, "hand_r", handR) &&
+                                   m_Animation.BoneModelMatrix(actorId, "vb_ak_hand_r", gripR);
+                if (!valid) return false;
+                const glm::vec3 position(weaponBone[3]);
+                const glm::vec3 forward = glm::normalize(-glm::vec3(weaponBone[2]));
+                const float leftError = glm::length(glm::vec3(handL[3] - gripL[3]));
+                const float rightError = glm::length(glm::vec3(handR[3] - gripR[3]));
+                std::ofstream out(metricsPath, std::ios::app);
+                out << name << ',' << pitch << ',' << yaw << ',' << position.x << ',' << position.y << ',' << position.z << ','
+                    << forward.x << ',' << forward.y << ',' << forward.z << ',' << leftError << ',' << rightError << '\n';
+                return static_cast<bool>(out);
+            };
             if (frame == 0)
             {
                 if (!std::filesystem::exists(body) || !std::filesystem::exists(clip) || !std::filesystem::exists(weaponSource)) return true;
@@ -1659,6 +1677,8 @@ public class AnimApiDefaults : MonoBehaviour
                 controller.Base().states = { idle };
                 controller.Base().defaultState = "Idle";
                 controller.Save(controllerPath);
+                std::ofstream(metricsPath, std::ios::trunc) <<
+                    "pose,pitch_deg,yaw_deg,weapon_x_m,weapon_y_m,weapon_z_m,forward_x,forward_y,forward_z,left_grip_error_m,right_grip_error_m\n";
                 oldPivot = m_Camera.Pivot(); oldRotation = m_Camera.Rotation(); oldDistance = m_Camera.Distance();
                 Entity& character = m_Scene.Create("AE AK Visual Test");
                 actorId = character.id;
@@ -1694,12 +1714,21 @@ public class AnimApiDefaults : MonoBehaviour
                 m_Camera.SetState({ 20.0f, 1.2f, 0.0f }, glm::angleAxis(glm::radians(180.0f), glm::vec3(0, 1, 0)), 3.0f, false);
                 return false;
             }
-            if (frame == 15) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ae_ak_neutral.bmp");
+            if (frame == 15)
+            {
+                m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ae_ak_neutral.bmp");
+                t.Check(recordPose("neutral", 0.0f, 0.0f), "AE AK neutral pose metrics recorded");
+            }
             if (frame == 16) m_Animation.SetLook(actorId, 20.0f, 15.0f);
-            if (frame == 35) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ae_ak_aim.bmp");
+            if (frame == 35)
+            {
+                m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ae_ak_aim.bmp");
+                t.Check(recordPose("aim", 20.0f, 15.0f), "AE AK angled pose metrics recorded");
+            }
             if (frame < 36) return false;
             const bool captured = std::filesystem::exists(captureDir + "/ae_ak_neutral.bmp") &&
-                                  std::filesystem::exists(captureDir + "/ae_ak_aim.bmp");
+                                  std::filesystem::exists(captureDir + "/ae_ak_aim.bmp") &&
+                                  std::filesystem::exists(metricsPath);
             t.Check(captured, "AE AK neutral and angled aim frames captured for review");
             if (actorId != kNullEntity) m_Scene.Destroy(actorId);
             actorId = kNullEntity;
