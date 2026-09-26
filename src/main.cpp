@@ -71,7 +71,7 @@ namespace
 
 int main(int argc, char** argv)
 {
-    bool selfTest = false;
+    bool selfTest = false, animationOnly = false;
     float playtest = 0.0f, mouseDX = 0.0f, mouseDY = 0.0f;
     std::vector<int> heldKeys;
     std::vector<std::pair<int, float>> pressedKeys;
@@ -80,6 +80,7 @@ int main(int argc, char** argv)
     {
         const std::string arg = argv[i];
         if (arg == "--selftest") selfTest = true;
+        else if (arg == "--selftest-animation") { selfTest = true; animationOnly = true; }
         else if (arg == "--playtest" && i + 1 < argc) playtest = static_cast<float>(std::atof(argv[++i]));
         else if (arg == "--mouse" && i + 1 < argc) std::sscanf(argv[++i], "%f,%f", &mouseDX, &mouseDY);
         else if ((arg == "--hold" || arg == "--press") && i + 1 < argc)
@@ -204,7 +205,8 @@ int main(int argc, char** argv)
         std::error_code ec;
         fs::remove_all(projectPath, ec);
         std::string error;
-        if (!Project::Create(projectPath, "SelfTest", Project::Template::Sample3D, error))
+        const Project::Template testTemplate = animationOnly ? Project::Template::Empty3D : Project::Template::Sample3D;
+        if (!Project::Create(projectPath, animationOnly ? "AnimationTest" : "SelfTest", testTemplate, error))
         {
             LOG_ERROR("Self test: %s", error.c_str());
             shutdownImGui();
@@ -259,7 +261,7 @@ int main(int argc, char** argv)
     Editor editor;
     g_Editor = &editor;
     editor.Init(&vk, &renderer, &resources, &scripts, window);
-    if (selfTest) editor.EnableSelfTest(captureDir);
+    if (selfTest) editor.EnableSelfTest(captureDir, animationOnly);
     if (playtest > 0.0f) editor.EnablePlaytest(playtest, heldKeys, pressedKeys, captureDir);
     if (playtest > 0.0f) editor.SetPlaytestMouse(mouseDX, mouseDY);
 

@@ -9,6 +9,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -67,7 +68,7 @@ int Editor::SelfTestFailures() const
     return m_Test ? m_Test->failures : 0;
 }
 
-void Editor::EnableSelfTest(const std::string& captureDir)
+void Editor::EnableSelfTest(const std::string& captureDir, bool animationOnly)
 {
     m_Test = std::make_unique<SelfTest>();
     SelfTest& t = *m_Test;
@@ -1792,6 +1793,11 @@ public class AnimApiDefaults : MonoBehaviour
         t.Check(!m_Scripts->HasCompileErrors() && m_Scripts->FindClass("Rotator"), "fixing the script recompiles cleanly");
         return true;
     } });
+
+    if (animationOnly)
+        t.steps.erase(std::remove_if(t.steps.begin(), t.steps.end(), [](const SelfTest::Step& step) {
+            return std::string(step.name).rfind("animation:", 0) != 0;
+        }), t.steps.end());
 }
 
 void Editor::RunSelfTest()

@@ -42,7 +42,7 @@ public:
     bool WantsQuit() const { return m_WantsQuit; }
 
     // Automated UI test (--selftest): drives the editor through ImGui input events and exits.
-    void EnableSelfTest(const std::string& captureDir = "");
+    void EnableSelfTest(const std::string& captureDir = "", bool animationOnly = false);
     int SelfTestFailures() const;
 
     // Automated play session (--playtest): enters play mode with keys held down, logs animated objects and

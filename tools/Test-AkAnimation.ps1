@@ -1,6 +1,7 @@
 param(
     [string]$AeAssets,
     [string]$OutputDir = 'build/test-captures/ak',
+    [string]$ReviewDir = 'docs/test-captures/ak',
     [switch]$SkipBuild,
     [switch]$ProcessOnly
 )
@@ -53,10 +54,10 @@ if (-not $ProcessOnly) {
     $previousErrorAction = $ErrorActionPreference
     try {
         $env:THEENGINE_AE_ASSETS = $AeAssets
-        # The self-test intentionally compiles a broken script to verify error reporting. In Windows
-        # PowerShell 5, native stderr becomes an ErrorRecord; collect it without aborting the runner.
+        # In Windows PowerShell 5, native stderr becomes an ErrorRecord; collect it without
+        # aborting before we can read the engine's final test result.
         $ErrorActionPreference = 'Continue'
-        $testOutput = & $engine --selftest --capture-dir $OutputDir 2>&1
+        $testOutput = & $engine --selftest-animation --capture-dir $OutputDir 2>&1
         $testExit = $LASTEXITCODE
         $testOutput | Out-File -LiteralPath (Join-Path $OutputDir 'selftest.log') -Encoding utf8
     }
@@ -146,9 +147,16 @@ $summary = [ordered]@{
 }
 $summary | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDir 'summary.json') -Encoding utf8
 
-Write-Host "Self-test: $passed passed, $failed failed (exit $testExit)"
+if (-not [System.IO.Path]::IsPathRooted($ReviewDir)) { $ReviewDir = Join-Path $repo $ReviewDir }
+$ReviewDir = [System.IO.Path]::GetFullPath($ReviewDir)
+New-Item -ItemType Directory -Force -Path $ReviewDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $OutputDir 'ae_ak_comparison.png') -Destination (Join-Path $ReviewDir 'latest-comparison.png') -Force
+Copy-Item -LiteralPath (Join-Path $OutputDir 'ae_ak_closeup.png') -Destination (Join-Path $ReviewDir 'latest-closeup.png') -Force
+
+Write-Host "Animation test: $passed passed, $failed failed (exit $testExit)"
 Write-Host "AK comparison: $(Join-Path $OutputDir 'ae_ak_comparison.png')"
 Write-Host "AK close-up: $(Join-Path $OutputDir 'ae_ak_closeup.png')"
 Write-Host "Grip metrics: $metricsPath"
 Write-Host "Full log: $(Join-Path $OutputDir 'selftest.log')"
+Write-Host "Remote-review images to commit: $ReviewDir"
 if ($testExit -ne 0 -or $failed -ne 0) { exit 1 }
