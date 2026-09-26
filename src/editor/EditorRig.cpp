@@ -60,11 +60,14 @@ void Editor::DrawRigWindow()
     if (ImGui::Button("Copy Bone")) append("copy \"helper\" \"source\" 1 1 1 1\n");
     ImGui::SameLine();
     if (ImGui::Button("Copy Before Look")) append("precopy \"helper\" \"source\" 1 1 1 1\n");
+    ImGui::SameLine();
+    if (ImGui::Button("Rotate Before Look")) append("prerotate \"bone\" \"space\" 0 0 0 1\n");
     if (ImGui::Button("Modify Bone")) append("modify \"bone\" \"space\" 0 0 0 0 0 0 1 1\n");
     ImGui::SameLine();
     if (ImGui::Button("Two Bone IK")) append("twobone \"hand_l\" \"target\" \"\" 1\n");
     ImGui::TextDisabled("Lines execute in order. Put helper bones before controls; copy targets before IK.");
-    ImGui::TextDisabled("Copy flags: translation rotation scale (1/0). Modify: position, quaternion xyzw, weight.");
+    ImGui::TextDisabled("Copy flags: translation rotation scale (1/0). Rotate: quaternion xyzw in space bone axes.");
+    ImGui::TextDisabled("Modify: position, quaternion xyzw, weight.");
     if (const Skeleton* skeleton = MaskSkeleton())
     {
         if (ImGui::CollapsingHeader("Available bones"))

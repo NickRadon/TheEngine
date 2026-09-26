@@ -8,14 +8,15 @@ Use the AK and Quantum character under AE Master's `Assets/AE` only. The `KINEMA
 AK locomotion/idle/reload clip + upper-body layers
   -> OnAnimatorPose jobs
   -> precopy: ik_hand_gun -> head/vb_ak_weapon
-              ik_hand_l/r -> vb_ak_weapon/vb_ak_hand_l/r
+  -> prerotate: correct vb_ak_weapon in its copied source frame
+  -> precopy: ik_hand_l/r -> vb_ak_weapon/vb_ak_hand_l/r
   -> bounded additive pitch/yaw over spine_01..05, neck_01, head
-  -> copy/modify weapon offsets, then Two Bone IK left and right arms
+  -> optional aim/sway weapon modifiers, then Two Bone IK left and right arms
   -> AK scene object socketed to vb_ak_weapon
   -> skinning
 ```
 
-The helpers under `head` are non-skinned children. Copying their **model-space** transforms before the bend computes the grip positions relative to the unbent head. The later spine/head bend carries the weapon helper and both grip helpers together; arm IK then reattaches the hands to the carried grips. This keeps authored reload/inspect target motion instead of pinning hands in one static world location. Unreal documents virtual bones as alternate-parent targets for exactly the rifle/head-look swimming problem; its common root-parented example is a useful comparison, while head parenting is the deliberate choice here because the weapon must follow the aimed head frame. [Unreal Virtual Bones](https://dev.epicgames.com/documentation/unreal-engine/virtual-bones-in-unreal-engine)
+The helpers under `head` are non-skinned children. First copy the authored weapon transform, then apply its local rotation correction, then copy the hand targets in **model space**. The AK rig currently uses a 90-degree local X correction because the copied weapon axis was pointing almost straight down; this value is authored in the `.rig` file. This preserves the authored neutral hand positions despite the weapon correction. The later spine/head bend carries the weapon helper and both grip helpers together; arm IK then reattaches the hands to the carried grips. This keeps authored reload/inspect target motion instead of pinning hands in one static world location. Unreal documents virtual bones as alternate-parent targets for exactly the rifle/head-look swimming problem; its common root-parented example is a useful comparison, while head parenting is the deliberate choice here because the weapon must follow the aimed head frame. [Unreal Virtual Bones](https://dev.epicgames.com/documentation/unreal-engine/virtual-bones-in-unreal-engine)
 
 ## Aim driver and controls
 

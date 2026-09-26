@@ -1600,9 +1600,24 @@ public class AnimApiDefaults : MonoBehaviour
                 };
                 system.Update(rigScene, 0.0f, false);
                 const Skeleton* augmented = system.SkeletonOf(character.id);
-                glm::mat4 before(1), after(1), handL(1), gripL(1), handR(1), gripR(1);
+                glm::mat4 before(1), after(1), sourceWeapon(1), sourceGripL(1), sourceGripR(1);
+                glm::mat4 handL(1), gripL(1), handR(1), gripR(1);
                 const bool prepared = augmented && augmented->Find("vb_ak_weapon") >= 0 &&
-                                      system.BoneModelMatrix(character.id, "vb_ak_weapon", before);
+                                      system.BoneModelMatrix(character.id, "vb_ak_weapon", before) &&
+                                      system.BoneModelMatrix(character.id, "ik_hand_gun", sourceWeapon) &&
+                                      system.BoneModelMatrix(character.id, "ik_hand_l", sourceGripL) &&
+                                      system.BoneModelMatrix(character.id, "ik_hand_r", sourceGripR) &&
+                                      system.BoneModelMatrix(character.id, "vb_ak_hand_l", gripL) &&
+                                      system.BoneModelMatrix(character.id, "vb_ak_hand_r", gripR);
+                const glm::quat sourceRotation = glm::normalize(glm::quat_cast(glm::mat3(sourceWeapon)));
+                const glm::quat correctedRotation = glm::normalize(glm::quat_cast(glm::mat3(before)));
+                const glm::quat expectedOffset = glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+                const bool offsetBeforeLook = prepared && std::abs(glm::dot(
+                    glm::normalize(glm::inverse(sourceRotation) * correctedRotation), expectedOffset)) > 0.999f;
+                t.Check(offsetBeforeLook, "AE AK weapon rotation offset follows copy and precedes look");
+                t.Check(prepared && glm::length(glm::vec3(sourceGripL[3] - gripL[3])) < 0.0001f &&
+                            glm::length(glm::vec3(sourceGripR[3] - gripR[3])) < 0.0001f,
+                        "AE AK hand targets copy after offset and before look");
                 system.SetLook(character.id, 20.0f, 15.0f);
                 system.Update(rigScene, 0.0f, false);
                 const bool followed = system.BoneModelMatrix(character.id, "vb_ak_weapon", after) &&

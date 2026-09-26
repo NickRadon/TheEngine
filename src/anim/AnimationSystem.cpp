@@ -39,8 +39,8 @@ namespace
             std::istringstream row(line);
             std::string kind, name, parentName;
             if (!(row >> kind) || kind[0] == '#') continue;
-            const bool beforeLook = kind == "precopy";
-            if (kind == "copy" || beforeLook || kind == "move" || kind == "rotate" || kind == "addlocalrot" ||
+            const bool beforeLook = kind == "precopy" || kind == "prerotate";
+            if (kind == "copy" || kind == "precopy" || kind == "prerotate" || kind == "move" || kind == "rotate" || kind == "addlocalrot" ||
                 (version >= 2 && (kind == "modify" || kind == "twobone")))
             {
                 if (!(row >> std::quoted(name) >> std::quoted(parentName))) return nullptr;
@@ -53,7 +53,7 @@ namespace
                     LOG_ERROR("Rig operation has unknown bone %s or %s", name.c_str(), parentName.c_str());
                     return nullptr;
                 }
-                if (kind == "copy" || beforeLook)
+                if (kind == "copy" || kind == "precopy")
                 {
                     op.type = RigOperation::Type::Copy;
                     if (version >= 2)

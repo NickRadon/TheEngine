@@ -21,7 +21,7 @@ struct RigOperation
     int hint = -1;   // optional pole target for TwoBoneIk
     float weight = 1.0f;
     bool copyTranslation = true, copyRotation = true, copyScale = true;
-    bool beforeLook = false;
+    bool beforeLook = false; // precopy/prerotate run in file order before look and later weapon modifiers
     glm::vec3 position{ 0.0f };
     glm::quat rotation{ 1.0f, 0.0f, 0.0f, 0.0f };
 };
