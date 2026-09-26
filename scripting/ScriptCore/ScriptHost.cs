@@ -46,7 +46,9 @@ namespace TheEngine.Internal
         {
             public MonoBehaviour Behaviour;
             public ulong Entity;
-            public Action Awake, Start, Update, LateUpdate, OnDestroy;
+            public Action Awake, Start, Update, LateUpdate, FixedUpdate, OnDestroy;
+            public Action<Collision> OnCollisionEnter, OnCollisionExit;
+            public Action<Collider> OnTriggerEnter, OnTriggerExit;
             public bool Started;
         }
 
@@ -156,9 +158,10 @@ namespace TheEngine.Internal
             }
         }
 
-        internal static T AddComponent<T>(ulong entity) where T : MonoBehaviour, new()
+        internal static MonoBehaviour AddComponent(Type type, ulong entity)
         {
-            var behaviour = new T { m_EntityId = entity };
+            var behaviour = (MonoBehaviour)Activator.CreateInstance(type);
+            behaviour.m_EntityId = entity;
             int handle = Register(behaviour, entity);
             Invoke(s_Instances[handle].Awake, behaviour, "Awake");
             return behaviour;
@@ -183,6 +186,47 @@ namespace TheEngine.Internal
                 if (i.Started && i.Behaviour.enabled && IsAlive(i)) Invoke(i.Update, i.Behaviour, "Update");
             foreach (Instance i in instances)
                 if (i.Started && i.Behaviour.enabled && IsAlive(i)) Invoke(i.LateUpdate, i.Behaviour, "LateUpdate");
+        }
+
+        [UnmanagedCallersOnly]
+        public static void FixedTick(float fixedDeltaTime)
+        {
+            Time.fixedDeltaTime = fixedDeltaTime;
+            var instances = s_Instances.Values.ToList();
+            // Start runs before the first FixedUpdate, like Unity.
+            foreach (Instance i in instances)
+            {
+                if (i.Started || !i.Behaviour.enabled || !IsAlive(i)) continue;
+                i.Started = true;
+                Invoke(i.Start, i.Behaviour, "Start");
+            }
+            foreach (Instance i in instances)
+                if (i.Started && i.Behaviour.enabled && IsAlive(i)) Invoke(i.FixedUpdate, i.Behaviour, "FixedUpdate");
+        }
+
+        /// <summary>kind: 0 collision enter, 1 collision exit, 2 trigger enter, 3 trigger exit. data: point, normal, relative velocity.</summary>
+        [UnmanagedCallersOnly]
+        public static void OnCollision(ulong entity, ulong other, int kind, float* data)
+        {
+            var otherObject = new GameObject(other);
+            Collider otherCollider = otherObject.GetComponent<Collider>() ?? new Collider { m_EntityId = other };
+            var collision = new Collision(otherObject, otherCollider, new Vector3(data[0], data[1], data[2]),
+                                          new Vector3(data[3], data[4], data[5]), new Vector3(data[6], data[7], data[8]));
+            foreach (Instance i in s_Instances.Values.Where(x => x.Entity == entity).ToList())
+            {
+                if (!i.Behaviour.enabled || !IsAlive(i)) continue;
+                try
+                {
+                    switch (kind)
+                    {
+                        case 0: i.OnCollisionEnter?.Invoke(collision); break;
+                        case 1: i.OnCollisionExit?.Invoke(collision); break;
+                        case 2: i.OnTriggerEnter?.Invoke(otherCollider); break;
+                        case 3: i.OnTriggerExit?.Invoke(otherCollider); break;
+                    }
+                }
+                catch (Exception e) { Report($"{i.Behaviour.GetType().Name}.OnCollision/OnTrigger", e); }
+            }
         }
 
         [UnmanagedCallersOnly]
@@ -246,6 +290,11 @@ namespace TheEngine.Internal
                 Start = Bind(behaviour, type, "Start"),
                 Update = Bind(behaviour, type, "Update"),
                 LateUpdate = Bind(behaviour, type, "LateUpdate"),
+                FixedUpdate = Bind(behaviour, type, "FixedUpdate"),
+                OnCollisionEnter = Bind<Collision>(behaviour, type, "OnCollisionEnter"),
+                OnCollisionExit = Bind<Collision>(behaviour, type, "OnCollisionExit"),
+                OnTriggerEnter = Bind<Collider>(behaviour, type, "OnTriggerEnter"),
+                OnTriggerExit = Bind<Collider>(behaviour, type, "OnTriggerExit"),
                 OnDestroy = Bind(behaviour, type, "OnDestroy"),
             };
             int handle = s_NextHandle++;
@@ -261,6 +310,24 @@ namespace TheEngine.Internal
                 MethodInfo m = t.GetMethod(method, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly,
                                            null, Type.EmptyTypes, null);
                 if (m != null && m.ReturnType == typeof(void)) return (Action)Delegate.CreateDelegate(typeof(Action), target, m);
+            }
+            return null;
+        }
+
+        static Action<T> Bind<T>(object target, Type type, string method)
+        {
+            for (Type t = type; t != null && t != typeof(MonoBehaviour); t = t.BaseType)
+            {
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+                MethodInfo m = t.GetMethod(method, flags, null, new[] { typeof(T) }, null);
+                if (m != null && m.ReturnType == typeof(void)) return (Action<T>)Delegate.CreateDelegate(typeof(Action<T>), target, m);
+                // Unity also accepts the parameterless form.
+                m = t.GetMethod(method, flags, null, Type.EmptyTypes, null);
+                if (m != null && m.ReturnType == typeof(void))
+                {
+                    var a = (Action)Delegate.CreateDelegate(typeof(Action), target, m);
+                    return _ => a();
+                }
             }
             return null;
         }

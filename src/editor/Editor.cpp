@@ -82,6 +82,8 @@ bool Editor::Init(VulkanContext* vk, SceneRenderer* renderer, ResourceCache* res
 
 void Editor::Shutdown()
 {
+    if (m_Playing) ExitPlayMode();
+    m_Physics.End();
 }
 
 // ---------------------------------------------------------------------------
@@ -711,11 +713,36 @@ EntityId Editor::CreatePrimitive(PrimitiveType type, EntityId parent)
     Entity& e = m_Scene.Create(UniqueName(m_Scene, PrimitiveName(type)), parent);
     e.meshRenderer.enabled = true;
     e.meshRenderer.mesh = PrimitiveName(type);
+    AddDefaultCollider(e);
     EntityId id = e.id;
     PlaceInFrontOfCamera(id);
     Select(id);
     m_ScrollToEntity = id;
     return id;
+}
+
+void Editor::FitCollider(Entity& e, ColliderShape shape)
+{
+    ColliderComponent& c = e.collider;
+    c.shape = shape;
+    glm::vec3 bmin(-0.5f), bmax(0.5f);
+    if (e.meshRenderer.enabled)
+        if (const Mesh* mesh = m_Res->GetMesh(e.meshRenderer.mesh))
+        {
+            bmin = mesh->data.boundsMin;
+            bmax = mesh->data.boundsMax;
+        }
+    const glm::vec3 size = bmax - bmin;
+    c.center = (bmin + bmax) * 0.5f;
+    c.size = glm::max(size, glm::vec3(0.001f));
+    if (shape == ColliderShape::Sphere) c.radius = std::max({ size.x, size.y, size.z }) * 0.5f;
+    if (shape == ColliderShape::Capsule)
+    {
+        c.radius = std::max(size.x, size.z) * 0.5f;
+        c.height = size.y;
+    }
+    if (shape == ColliderShape::Mesh) c.center = glm::vec3(0.0f);
+    MarkEdited();
 }
 
 EntityId Editor::CreateEntity(const char* kind, EntityId parent)
@@ -944,6 +971,12 @@ void Editor::EnterPlayMode()
     m_PlayFrame = 0;
     m_FocusGameView = true;
     LOG_INFO("Entered play mode");
+    // Physics first, so Awake/Start can already use rigidbodies.
+    m_Physics.Begin(&m_Scene, [this](const std::string& ref) -> const MeshData* {
+        const Mesh* mesh = m_Res->GetMesh(ref);
+        return mesh ? &mesh->data : nullptr;
+    });
+    m_Scripts->SetPhysics(&m_Physics);
     m_Scripts->BeginPlay(&m_Scene);
 }
 
@@ -951,6 +984,7 @@ void Editor::ExitPlayMode()
 {
     if (!m_Playing) return;
     m_Scripts->EndPlay();
+    m_Physics.End();
     m_Scene = m_EditModeScene; // changes made in play mode are discarded, like Unity
     m_Playing = false;
     m_Paused = false;
@@ -966,6 +1000,9 @@ void Editor::UpdatePlayMode(float dt)
     if (m_StepRequested) dt = 1.0f / 60.0f;
     m_StepRequested = false;
     m_PlayTime += dt;
+    // Unity order: FixedUpdate + physics steps (with collision messages), then Update/LateUpdate.
+    m_Physics.Update(dt, [this] { m_Scripts->FixedTick(m_Physics.fixedDeltaTime); },
+                     [this](const std::vector<CollisionEvent>& events) { m_Scripts->DispatchCollisions(events); });
     m_Scripts->Tick(std::min(dt, 0.1f), m_PlayTime, m_PlayFrame++);
 }
 

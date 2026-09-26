@@ -42,6 +42,12 @@ struct ScriptNativeApi
     int (*InputGetKey)(int, int);
     int (*InputGetMouseButton)(int, int);
     void (*InputGetMouse)(float*);
+    void (*ComponentAdd)(uint64_t, int);
+    int (*RigidbodyGet)(uint64_t, int, float*);
+    void (*RigidbodySet)(uint64_t, int, const float*);
+    void (*RigidbodyAddForce)(uint64_t, const float*, int, int);
+    int (*PhysicsRaycast)(const float*, float, float*, uint64_t*);
+    void (*PhysicsGravity)(int, float*);
 };
 
 // Managed entry points (TheEngine.Internal.ScriptHost, [UnmanagedCallersOnly]).
@@ -58,6 +64,8 @@ struct ScriptEngine::Api
     wchar_t* (*GetInstanceFields)(int) = nullptr;
     void (*SetInstanceField)(int, const wchar_t*, const wchar_t*) = nullptr;
     void (*SetInstanceEnabled)(int, int) = nullptr;
+    void (*FixedTick)(float) = nullptr;
+    void (*OnCollision)(uint64_t, uint64_t, int, const float*) = nullptr;
 };
 
 namespace
@@ -126,6 +134,7 @@ namespace
         {
             e.meshRenderer.enabled = true;
             e.meshRenderer.mesh = PrimitiveName(static_cast<PrimitiveType>(primitive));
+            AddDefaultCollider(e);
         }
         return e.id;
     }
@@ -199,6 +208,8 @@ namespace
         case 0: return e->meshRenderer.enabled ? 1 : 0;
         case 1: return e->light.enabled ? 1 : 0;
         case 2: return e->camera.enabled ? 1 : 0;
+        case 3: return e->rigidbody.enabled ? 1 : 0;
+        case 4: return e->collider.enabled ? 1 : 0;
         default: return 0;
         }
     }
@@ -216,6 +227,8 @@ namespace
         case 4: out[0] = e->light.range; break;
         case 5: out[0] = e->light.enabled ? 1.0f : 0.0f; break;
         case 6: out[0] = e->camera.fov; break;
+        case 7: out[0] = e->collider.isTrigger ? 1.0f : 0.0f; break;
+        case 8: out[0] = e->collider.enabled ? 1.0f : 0.0f; break;
         default: return 0;
         }
         return 1;
@@ -234,6 +247,8 @@ namespace
         case 4: e->light.range = in[0]; break;
         case 5: e->light.enabled = in[0] != 0.0f; break;
         case 6: e->camera.fov = in[0]; break;
+        case 7: e->collider.isTrigger = in[0] != 0.0f; break;
+        case 8: e->collider.enabled = in[0] != 0.0f; break;
         }
     }
 
@@ -254,6 +269,89 @@ namespace
         if (!g_Engine) { std::memset(out, 0, sizeof(float) * 5); return; }
         const ScriptInput& in = g_Engine->Input();
         out[0] = in.mouseX; out[1] = in.mouseY; out[2] = in.mouseDX; out[3] = in.mouseDY; out[4] = in.wheel;
+    }
+
+    PhysicsWorld* P() { return g_Engine ? g_Engine->GetPhysics() : nullptr; }
+
+    // Adds an engine component (3 = Rigidbody, 4 = Collider) at runtime.
+    void NComponentAdd(uint64_t id, int component)
+    {
+        Entity* e = E(id);
+        if (!e) return;
+        if (component == 3) e->rigidbody.enabled = true;
+        else if (component == 4 && !e->collider.enabled)
+        {
+            AddDefaultCollider(*e);
+            e->collider.enabled = true;
+        }
+    }
+
+    // Rigidbody properties: 0 velocity, 1 angularVelocity, 2 mass, 3 useGravity, 4 isKinematic, 5 drag, 6 angularDrag.
+    int NRigidbodyGet(uint64_t id, int property, float* out)
+    {
+        Entity* e = E(id);
+        if (!e) return 0;
+        const RigidbodyComponent& r = e->rigidbody;
+        PhysicsWorld* physics = P();
+        switch (property)
+        {
+        case 0: { glm::vec3 v = physics && physics->Running() ? physics->GetVelocity(e->id) : glm::vec3(0.0f); std::memcpy(out, &v, 12); break; }
+        case 1: { glm::vec3 v = physics && physics->Running() ? physics->GetAngularVelocity(e->id) : glm::vec3(0.0f); std::memcpy(out, &v, 12); break; }
+        case 2: out[0] = r.mass; break;
+        case 3: out[0] = r.useGravity ? 1.0f : 0.0f; break;
+        case 4: out[0] = r.isKinematic ? 1.0f : 0.0f; break;
+        case 5: out[0] = r.drag; break;
+        case 6: out[0] = r.angularDrag; break;
+        default: return 0;
+        }
+        return 1;
+    }
+
+    void NRigidbodySet(uint64_t id, int property, const float* in)
+    {
+        Entity* e = E(id);
+        if (!e) return;
+        RigidbodyComponent& r = e->rigidbody;
+        PhysicsWorld* physics = P();
+        switch (property)
+        {
+        case 0: if (physics && physics->Running()) physics->SetVelocity(e->id, glm::make_vec3(in)); break;
+        case 1: if (physics && physics->Running()) physics->SetAngularVelocity(e->id, glm::make_vec3(in)); break;
+        case 2: r.mass = std::max(in[0], 1e-4f); break;
+        case 3: r.useGravity = in[0] != 0.0f; break;
+        case 4: r.isKinematic = in[0] != 0.0f; break;
+        case 5: r.drag = std::max(in[0], 0.0f); break;
+        case 6: r.angularDrag = std::max(in[0], 0.0f); break;
+        }
+    }
+
+    void NRigidbodyAddForce(uint64_t id, const float* force, int mode, int torque)
+    {
+        PhysicsWorld* physics = P();
+        if (!physics || !physics->Running() || !E(id)) return;
+        if (torque) physics->AddTorque(static_cast<EntityId>(id), glm::make_vec3(force), static_cast<ForceMode>(mode));
+        else physics->AddForce(static_cast<EntityId>(id), glm::make_vec3(force), static_cast<ForceMode>(mode));
+    }
+
+    // ray = origin xyz, direction xyz; hit = point xyz, normal xyz, distance
+    int NPhysicsRaycast(const float* ray, float maxDistance, float* hit, uint64_t* entity)
+    {
+        PhysicsWorld* physics = P();
+        RaycastHit h;
+        if (!physics || !physics->Running() || !physics->Raycast(glm::make_vec3(ray), glm::make_vec3(ray + 3), maxDistance, h)) return 0;
+        std::memcpy(hit, &h.point, 12);
+        std::memcpy(hit + 3, &h.normal, 12);
+        hit[6] = h.distance;
+        *entity = h.entity;
+        return 1;
+    }
+
+    void NPhysicsGravity(int set, float* value)
+    {
+        PhysicsWorld* physics = P();
+        if (!physics) return;
+        if (set) physics->gravity = glm::make_vec3(value);
+        else std::memcpy(value, &physics->gravity, 12);
     }
 }
 
@@ -357,12 +455,15 @@ bool ScriptEngine::HostRuntime()
     get(L"GetInstanceFields", m_Api->GetInstanceFields);
     get(L"SetInstanceField", m_Api->SetInstanceField);
     get(L"SetInstanceEnabled", m_Api->SetInstanceEnabled);
+    get(L"FixedTick", m_Api->FixedTick);
+    get(L"OnCollision", m_Api->OnCollision);
     if (!ok) return false;
 
     g_NativeApi = {
         NLog, NEntityExists, NEntityGetName, NEntitySetName, NEntityGetActive, NEntitySetActive, NEntityFind,
         NEntityCreate, NEntityDestroy, NEntityGetParent, NEntitySetParent, NTransformGet, NTransformSet,
         NHasComponent, NComponentGet, NComponentSet, NInputGetKey, NInputGetMouseButton, NInputGetMouse,
+        NComponentAdd, NRigidbodyGet, NRigidbodySet, NRigidbodyAddForce, NPhysicsRaycast, NPhysicsGravity,
     };
     return m_Api->Initialize(&g_NativeApi) == 1;
 #else
@@ -602,6 +703,29 @@ void ScriptEngine::Tick(float dt, float time, int frame)
 {
     if (!m_Playing) return;
     m_Api->Tick(dt, time, frame);
+    FlushDestroyQueue();
+}
+
+void ScriptEngine::FixedTick(float fixedDt)
+{
+    if (!m_Playing) return;
+    m_Api->FixedTick(fixedDt);
+    FlushDestroyQueue();
+}
+
+void ScriptEngine::DispatchCollisions(const std::vector<CollisionEvent>& events)
+{
+    if (!m_Playing) return;
+    for (const CollisionEvent& e : events)
+    {
+        // Each side gets the message with the other object; the normal points away from the receiver.
+        float a[9] = { e.point.x, e.point.y, e.point.z, e.normal.x, e.normal.y, e.normal.z,
+                       e.relativeVelocity.x, e.relativeVelocity.y, e.relativeVelocity.z };
+        float b[9] = { e.point.x, e.point.y, e.point.z, -e.normal.x, -e.normal.y, -e.normal.z,
+                       -e.relativeVelocity.x, -e.relativeVelocity.y, -e.relativeVelocity.z };
+        m_Api->OnCollision(e.a, e.b, static_cast<int>(e.type), a);
+        m_Api->OnCollision(e.b, e.a, static_cast<int>(e.type), b);
+    }
     FlushDestroyQueue();
 }
 

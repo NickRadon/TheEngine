@@ -101,6 +101,8 @@ private:
     std::vector<EntityId> SelectionRoots() const; // selected entities without a selected ancestor
 
     EntityId CreateEntity(const char* kind, EntityId parent = kNullEntity);
+    void FitCollider(Entity& e, ColliderShape shape); // sizes a collider to the mesh bounds, like Unity
+    void DrawColliderGizmo(ImDrawList* dl, const Entity& e);
     EntityId CreatePrimitive(PrimitiveType type, EntityId parent = kNullEntity);
     void PlaceInFrontOfCamera(EntityId id);
     void DeleteSelection();
@@ -165,6 +167,7 @@ private:
     bool m_Paused = false;
     bool m_StepRequested = false;
     Scene m_EditModeScene;
+    PhysicsWorld m_Physics;
     float m_PlayTime = 0.0f;
     int m_PlayFrame = 0;
     bool m_GameViewFocused = false;

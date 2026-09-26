@@ -276,6 +276,7 @@ void Scene::CreateDefault()
         lamp.light.range = 6.0f;
         lamp.transform.position = { 1.2f, 1.2f, 1.6f };
     }
+    for (Entity& e : entities) AddDefaultCollider(e);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +286,261 @@ namespace
 {
     std::ostream& operator<<(std::ostream& os, const glm::vec3& v) { return os << v.x << ' ' << v.y << ' ' << v.z; }
     std::istream& operator>>(std::istream& is, glm::vec3& v) { return is >> v.x >> v.y >> v.z; }
+
+    // Fields added in later versions are optional at the end of a line, so older files still load.
+    template <typename T>
+    void Optional(std::istream& is, T& field)
+    {
+        T value{};
+        if (is >> value) field = value;
+    }
+}
+
+void AddDefaultCollider(Entity& e)
+{
+    if (!e.meshRenderer.enabled) return;
+    ColliderComponent& c = e.collider;
+    c = ColliderComponent{};
+    c.enabled = true;
+    const std::string& m = e.meshRenderer.mesh;
+    if (m == "Sphere") c.shape = ColliderShape::Sphere;
+    else if (m == "Capsule" || m == "Cylinder") c.shape = ColliderShape::Capsule;
+    else if (m == "Cube") c.shape = ColliderShape::Box;
+    else c.shape = ColliderShape::Mesh;
+}
+
+std::vector<EntityProperty> SerializeEntity(const Entity& e, bool includeObject)
+{
+    std::vector<EntityProperty> props;
+    auto add = [&](const std::string& key, const std::ostringstream& line) { props.push_back({ key, line.str() }); };
+    if (includeObject)
+    {
+        std::ostringstream o;
+        o << "object " << e.active << ' ' << std::quoted(e.name);
+        add("object", o);
+    }
+    {
+        const Transform& t = e.transform;
+        std::ostringstream o;
+        o << "transform " << t.position << ' ' << t.rotation.x << ' ' << t.rotation.y << ' ' << t.rotation.z << ' '
+          << t.rotation.w << ' ' << t.scale << ' ' << t.euler;
+        add("transform", o);
+    }
+    {
+        const auto& m = e.meshRenderer;
+        std::ostringstream o;
+        o << "mesh " << m.enabled << ' ' << std::quoted(m.mesh) << ' ' << m.color << ' ' << m.metallic << ' '
+          << m.smoothness << ' ' << std::quoted(m.material) << ' ' << m.castShadows;
+        add("mesh", o);
+    }
+    {
+        const auto& l = e.light;
+        std::ostringstream o;
+        o << "light " << l.enabled << ' ' << l.color << ' ' << l.intensity << ' ' << l.castShadows << ' '
+          << l.shadowStrength << ' ' << static_cast<int>(l.type) << ' ' << l.range << ' ' << l.spotAngle << ' '
+          << l.innerSpotAngle;
+        add("light", o);
+    }
+    {
+        const auto& c = e.camera;
+        std::ostringstream o;
+        o << "camera " << c.enabled << ' ' << c.fov << ' ' << c.nearClip << ' ' << c.farClip << ' ' << c.orthographic << ' ' << c.orthoSize;
+        add("camera", o);
+    }
+    {
+        const auto& r = e.rigidbody;
+        std::ostringstream o;
+        o << "rigidbody " << r.enabled << ' ' << r.mass << ' ' << r.drag << ' ' << r.angularDrag << ' ' << r.useGravity << ' ' << r.isKinematic;
+        add("rigidbody", o);
+    }
+    {
+        const auto& c = e.collider;
+        std::ostringstream o;
+        o << "collider " << c.enabled << ' ' << static_cast<int>(c.shape) << ' ' << c.center << ' ' << c.size << ' ' << c.radius << ' '
+          << c.height << ' ' << c.isTrigger << ' ' << c.friction << ' ' << c.bounciness;
+        add("collider", o);
+    }
+    for (size_t i = 0; i < e.scripts.size(); ++i)
+    {
+        const ScriptComponent& sc = e.scripts[i];
+        std::ostringstream o;
+        o << "script " << sc.enabled << ' ' << std::quoted(sc.className);
+        add("script#" + std::to_string(i), o);
+        for (const ScriptField& f : sc.fields)
+        {
+            std::ostringstream fo;
+            fo << "field " << std::quoted(f.name) << ' ' << std::quoted(f.type) << ' ' << std::quoted(f.value);
+            add("field#" + std::to_string(i) + "#" + f.name, fo);
+        }
+    }
+    return props;
+}
+
+bool ParseEntityLine(Entity& e, const std::string& line)
+{
+    std::istringstream in(line);
+    std::string key;
+    if (!(in >> key)) return true;
+    if (key == "object")
+    {
+        in >> e.active >> std::quoted(e.name);
+    }
+    else if (key == "transform")
+    {
+        Transform& t = e.transform;
+        in >> t.position >> t.rotation.x >> t.rotation.y >> t.rotation.z >> t.rotation.w >> t.scale >> t.euler;
+    }
+    else if (key == "mesh")
+    {
+        auto& m = e.meshRenderer;
+        in >> m.enabled >> std::ws;
+        if (in.peek() == '"')
+        {
+            in >> std::quoted(m.mesh) >> m.color >> m.metallic >> m.smoothness;
+            if (in.fail()) return false;
+            in >> std::ws;
+            if (in.peek() == '"') in >> std::quoted(m.material);
+            Optional(in, m.castShadows);
+            return true;
+        }
+        // Version 1: primitive enum index.
+        int type = 0;
+        in >> type >> m.color >> m.metallic >> m.smoothness;
+        m.mesh = PrimitiveName(static_cast<PrimitiveType>(std::clamp(type, 0, static_cast<int>(PrimitiveType::Count) - 1)));
+    }
+    else if (key == "light")
+    {
+        auto& l = e.light;
+        in >> l.enabled >> l.color >> l.intensity;
+        if (in.fail()) return false;
+        Optional(in, l.castShadows);
+        Optional(in, l.shadowStrength);
+        int type = 0;
+        if (in >> type) l.type = static_cast<LightType>(std::clamp(type, 0, 2));
+        Optional(in, l.range);
+        Optional(in, l.spotAngle);
+        Optional(in, l.innerSpotAngle);
+        return true;
+    }
+    else if (key == "camera")
+    {
+        auto& c = e.camera;
+        in >> c.enabled >> c.fov >> c.nearClip >> c.farClip >> c.orthographic >> c.orthoSize;
+    }
+    else if (key == "rigidbody")
+    {
+        auto& r = e.rigidbody;
+        in >> r.enabled >> r.mass >> r.drag >> r.angularDrag >> r.useGravity >> r.isKinematic;
+    }
+    else if (key == "collider")
+    {
+        auto& c = e.collider;
+        int shape = 0;
+        in >> c.enabled >> shape >> c.center >> c.size >> c.radius >> c.height >> c.isTrigger >> c.friction >> c.bounciness;
+        c.shape = static_cast<ColliderShape>(std::clamp(shape, 0, 3));
+    }
+    else if (key == "script")
+    {
+        ScriptComponent sc;
+        in >> sc.enabled >> std::quoted(sc.className);
+        e.scripts.push_back(sc);
+    }
+    else if (key == "field")
+    {
+        if (e.scripts.empty()) return true;
+        ScriptField f;
+        in >> std::quoted(f.name) >> std::quoted(f.type) >> std::quoted(f.value);
+        e.scripts.back().fields.push_back(f);
+    }
+    else if (key == "prefab")
+    {
+        in >> std::quoted(e.prefab) >> e.prefabId;
+        std::string o;
+        while (in >> std::quoted(o)) e.prefabOverrides.push_back(o);
+        return true;
+    }
+    else if (key == "rotator")
+    {
+        // Version 1 built-in Rotator component: now a C# script with the same field.
+        bool enabled = false;
+        glm::vec3 speed(0.0f);
+        in >> enabled >> speed;
+        if (!in.fail() && enabled)
+        {
+            ScriptComponent sc;
+            sc.className = "Rotator";
+            std::ostringstream v;
+            v << speed.x << ' ' << speed.y << ' ' << speed.z;
+            sc.fields.push_back({ "degreesPerSecond", "Vector3", v.str() });
+            e.scripts.push_back(sc);
+        }
+        return true;
+    }
+    else
+    {
+        return true; // unknown key: skip line
+    }
+    return !in.fail();
+}
+
+std::vector<std::string> TokenizeLine(const std::string& line)
+{
+    std::vector<std::string> tokens;
+    std::istringstream in(line);
+    std::string t;
+    while (in >> std::ws, in.good())
+    {
+        if (in.peek() == '"') { in >> std::quoted(t); t = "\"" + t; } // marker so an empty string is still a token
+        else in >> t;
+        tokens.push_back(t);
+    }
+    return tokens;
+}
+
+void WriteEntities(std::ostream& out, const std::vector<Entity>& entities)
+{
+    for (const Entity& e : entities)
+    {
+        out << "entity " << e.id << ' ' << e.parent << ' ' << e.active << ' ' << std::quoted(e.name) << "\n";
+        for (const EntityProperty& p : SerializeEntity(e, false))
+            out << (p.key.rfind("field#", 0) == 0 ? "    " : "  ") << p.line << "\n";
+        if (!e.prefab.empty() || e.prefabId != kNullEntity)
+        {
+            out << "  prefab " << std::quoted(e.prefab) << ' ' << e.prefabId;
+            for (const std::string& o : e.prefabOverrides) out << ' ' << std::quoted(o);
+            out << "\n";
+        }
+    }
+}
+
+bool ReadEntities(std::istream& file, std::vector<Entity>& entities, EntityId& nextId,
+                  std::function<void(const std::string&, std::istringstream&)> other)
+{
+    Entity* current = nullptr;
+    std::string line;
+    while (std::getline(file, line))
+    {
+        std::istringstream in(line);
+        std::string key;
+        if (!(in >> key)) continue;
+        if (key == "entity")
+        {
+            entities.emplace_back();
+            current = &entities.back();
+            in >> current->id >> current->parent >> current->active >> std::quoted(current->name);
+            if (in.fail()) return false;
+            nextId = std::max(nextId, current->id + 1);
+        }
+        else if (current)
+        {
+            if (!ParseEntityLine(*current, line)) return false;
+        }
+        else if (other)
+        {
+            other(key, in);
+        }
+    }
+    return true;
 }
 
 bool Scene::Save(const std::string& path) const
@@ -298,28 +554,7 @@ bool Scene::Save(const std::string& path) const
         << sky.cloudCoverage << ' ' << sky.cloudDensity << ' ' << sky.cloudSpeed << ' ' << sky.cloudScale << ' '
         << sky.stars << ' ' << sky.fallbackColor << ' ' << sky.shadowDistance << ' '
         << sky.ssao << ' ' << sky.ssaoRadius << ' ' << sky.ssaoIntensity << "\n";
-    for (const Entity& e : entities)
-    {
-        const Transform& t = e.transform;
-        out << "entity " << e.id << ' ' << e.parent << ' ' << e.active << ' ' << std::quoted(e.name) << "\n";
-        out << "  transform " << t.position << ' ' << t.rotation.x << ' ' << t.rotation.y << ' ' << t.rotation.z << ' '
-            << t.rotation.w << ' ' << t.scale << ' ' << t.euler << "\n";
-        const auto& m = e.meshRenderer;
-        out << "  mesh " << m.enabled << ' ' << std::quoted(m.mesh) << ' ' << m.color << ' ' << m.metallic << ' '
-            << m.smoothness << ' ' << std::quoted(m.material) << ' ' << m.castShadows << "\n";
-        const auto& l = e.light;
-        out << "  light " << l.enabled << ' ' << l.color << ' ' << l.intensity << ' ' << l.castShadows << ' '
-            << l.shadowStrength << ' ' << static_cast<int>(l.type) << ' ' << l.range << ' ' << l.spotAngle << ' '
-            << l.innerSpotAngle << "\n";
-        const auto& c = e.camera;
-        out << "  camera " << c.enabled << ' ' << c.fov << ' ' << c.nearClip << ' ' << c.farClip << ' ' << c.orthographic << ' ' << c.orthoSize << "\n";
-        for (const ScriptComponent& s : e.scripts)
-        {
-            out << "  script " << s.enabled << ' ' << std::quoted(s.className) << "\n";
-            for (const ScriptField& f : s.fields)
-                out << "    field " << std::quoted(f.name) << ' ' << std::quoted(f.type) << ' ' << std::quoted(f.value) << "\n";
-        }
-    }
+    WriteEntities(out, entities);
     return static_cast<bool>(out);
 }
 
@@ -331,22 +566,12 @@ bool Scene::Load(const std::string& path)
     int version = 0;
     file >> header >> version;
     if (header != "TheEngineScene") return false;
-
-    // Line based: fields added in later versions are optional at the end of a line, so older files still load.
-    auto optional = [](std::istream& is, auto& field) {
-        std::remove_reference_t<decltype(field)> value{};
-        if (is >> value) field = value;
-    };
+    std::string rest;
+    std::getline(file, rest);
 
     Scene loaded;
-    Entity* current = nullptr;
-    std::string line;
-    std::getline(file, line); // rest of header line
-    while (std::getline(file, line))
-    {
-        std::istringstream in(line);
-        std::string key;
-        if (!(in >> key)) continue;
+    bool ok = true;
+    const bool read = ReadEntities(file, loaded.entities, loaded.m_NextId, [&](const std::string& key, std::istringstream& in) {
         if (key == "name") in >> std::quoted(loaded.name);
         else if (key == "sky")
         {
@@ -354,97 +579,14 @@ bool Scene::Load(const std::string& path)
             in >> s.enabled >> s.sunSize >> s.sunConvergence >> s.atmosphereThickness >> s.skyTint >> s.groundColor
                >> s.exposure >> s.ambientIntensity >> s.cloudCoverage >> s.cloudDensity >> s.cloudSpeed >> s.cloudScale
                >> s.stars >> s.fallbackColor;
-            if (in.fail()) return false;
-            optional(in, s.shadowDistance);
-            optional(in, s.ssao);
-            optional(in, s.ssaoRadius);
-            optional(in, s.ssaoIntensity);
-            continue;
+            if (in.fail()) { ok = false; return; }
+            Optional(in, s.shadowDistance);
+            Optional(in, s.ssao);
+            Optional(in, s.ssaoRadius);
+            Optional(in, s.ssaoIntensity);
         }
-        else if (key == "entity")
-        {
-            loaded.entities.emplace_back();
-            current = &loaded.entities.back();
-            in >> current->id >> current->parent >> current->active >> std::quoted(current->name);
-            loaded.m_NextId = std::max(loaded.m_NextId, current->id + 1);
-        }
-        else if (current && key == "transform")
-        {
-            Transform& t = current->transform;
-            in >> t.position >> t.rotation.x >> t.rotation.y >> t.rotation.z >> t.rotation.w >> t.scale >> t.euler;
-        }
-        else if (current && key == "mesh")
-        {
-            auto& m = current->meshRenderer;
-            in >> m.enabled >> std::ws;
-            if (in.peek() == '"')
-            {
-                in >> std::quoted(m.mesh) >> m.color >> m.metallic >> m.smoothness;
-                if (in.fail()) return false;
-                in >> std::ws;
-                if (in.peek() == '"') in >> std::quoted(m.material);
-                optional(in, m.castShadows);
-                continue;
-            }
-            // Version 1: primitive enum index.
-            int type = 0;
-            in >> type >> m.color >> m.metallic >> m.smoothness;
-            m.mesh = PrimitiveName(static_cast<PrimitiveType>(std::clamp(type, 0, static_cast<int>(PrimitiveType::Count) - 1)));
-        }
-        else if (current && key == "light")
-        {
-            auto& l = current->light;
-            in >> l.enabled >> l.color >> l.intensity;
-            if (in.fail()) return false;
-            optional(in, l.castShadows);
-            optional(in, l.shadowStrength);
-            int type = 0;
-            if (in >> type) l.type = static_cast<LightType>(std::clamp(type, 0, 2));
-            optional(in, l.range);
-            optional(in, l.spotAngle);
-            optional(in, l.innerSpotAngle);
-            continue;
-        }
-        else if (current && key == "camera")
-        {
-            auto& c = current->camera;
-            in >> c.enabled >> c.fov >> c.nearClip >> c.farClip >> c.orthographic >> c.orthoSize;
-        }
-        else if (current && key == "script")
-        {
-            ScriptComponent s;
-            in >> s.enabled >> std::quoted(s.className);
-            current->scripts.push_back(s);
-        }
-        else if (current && key == "field" && !current->scripts.empty())
-        {
-            ScriptField f;
-            in >> std::quoted(f.name) >> std::quoted(f.type) >> std::quoted(f.value);
-            current->scripts.back().fields.push_back(f);
-        }
-        else if (current && key == "rotator")
-        {
-            // Version 1 built-in Rotator component: now a C# script with the same field.
-            bool enabled = false;
-            glm::vec3 speed(0.0f);
-            in >> enabled >> speed;
-            if (!in.fail() && enabled)
-            {
-                ScriptComponent s;
-                s.className = "Rotator";
-                std::ostringstream v;
-                v << speed.x << ' ' << speed.y << ' ' << speed.z;
-                s.fields.push_back({ "degreesPerSecond", "Vector3", v.str() });
-                current->scripts.push_back(s);
-            }
-            continue;
-        }
-        else
-        {
-            continue; // unknown key: skip line
-        }
-        if (in.fail()) return false;
-    }
+    });
+    if (!read || !ok) return false;
     *this = std::move(loaded);
     return true;
 }

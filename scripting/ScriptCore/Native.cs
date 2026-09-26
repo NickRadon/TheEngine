@@ -25,6 +25,12 @@ namespace TheEngine.Internal
         public delegate* unmanaged<int, int, int> InputGetKey;
         public delegate* unmanaged<int, int, int> InputGetMouseButton;
         public delegate* unmanaged<float*, void> InputGetMouse;
+        public delegate* unmanaged<ulong, int, void> ComponentAdd;
+        public delegate* unmanaged<ulong, int, float*, int> RigidbodyGet;
+        public delegate* unmanaged<ulong, int, float*, void> RigidbodySet;
+        public delegate* unmanaged<ulong, float*, int, int, void> RigidbodyAddForce;
+        public delegate* unmanaged<float*, float, float*, ulong*, int> PhysicsRaycast;
+        public delegate* unmanaged<int, float*, void> PhysicsGravity;
     }
 
     internal static unsafe class Native
@@ -55,7 +61,11 @@ namespace TheEngine.Internal
         LightRange = 4,          // float[1]
         LightEnabled = 5,        // float[1]
         CameraFieldOfView = 6,   // float[1]
+        ColliderIsTrigger = 7,   // float[1]
+        ColliderEnabled = 8,     // float[1]
     }
 
-    internal enum EngineComponent { MeshRenderer = 0, Light = 1, Camera = 2 }
+    internal enum EngineComponent { MeshRenderer = 0, Light = 1, Camera = 2, Rigidbody = 3, Collider = 4 }
+
+    internal enum RigidbodyProperty { Velocity = 0, AngularVelocity = 1, Mass = 2, UseGravity = 3, IsKinematic = 4, Drag = 5, AngularDrag = 6 }
 }

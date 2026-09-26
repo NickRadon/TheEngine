@@ -616,7 +616,6 @@ void Editor::DrawInspector()
             }
             if (c.orthographic)
             {
-                EditorUI::PropertyLabel("Size");
                 if (ImGui::DragFloat("##size", &c.orthoSize, 0.05f, 0.01f, 1000.0f)) MarkEdited();
             }
             else
@@ -634,6 +633,90 @@ void Editor::DrawInspector()
         {
             PushUndo();
             e->camera.enabled = false;
+        }
+    }
+
+    // Rigidbody
+    if (e->rigidbody.enabled)
+    {
+        bool remove = false;
+        if (EditorUI::ComponentHeader("Rigidbody", Icon::Gizmos, nullptr, &remove))
+        {
+            RigidbodyComponent& r = e->rigidbody;
+            EditorUI::PropertyLabel("Mass");
+            if (ImGui::DragFloat("##mass", &r.mass, 0.05f, 0.0001f, 100000.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Drag");
+            if (ImGui::DragFloat("##drag", &r.drag, 0.01f, 0.0f, 1000.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Angular Drag");
+            if (ImGui::DragFloat("##angularDrag", &r.angularDrag, 0.01f, 0.0f, 1000.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Use Gravity");
+            if (ImGui::Checkbox("##useGravity", &r.useGravity)) MarkEdited();
+            EditorUI::PropertyLabel("Is Kinematic");
+            if (ImGui::Checkbox("##isKinematic", &r.isKinematic)) MarkEdited();
+            if (m_Playing && m_Physics.Running() && !r.isKinematic)
+            {
+                const glm::vec3 v = m_Physics.GetVelocity(e->id);
+                ImGui::TextDisabled("Velocity  %.2f  %.2f  %.2f", v.x, v.y, v.z);
+            }
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->rigidbody.enabled = false;
+        }
+    }
+
+    // Collider
+    if (e->collider.enabled)
+    {
+        bool remove = false;
+        static const char* kColliderNames[] = { "Box Collider", "Sphere Collider", "Capsule Collider", "Mesh Collider" };
+        if (EditorUI::ComponentHeader(kColliderNames[static_cast<int>(e->collider.shape)], Icon::Cube, nullptr, &remove))
+        {
+            ColliderComponent& c = e->collider;
+            EditorUI::PropertyLabel("Shape");
+            int shape = static_cast<int>(c.shape);
+            if (ImGui::Combo("##shape", &shape, "Box\0Sphere\0Capsule\0Mesh\0"))
+            {
+                MarkEdited();
+                FitCollider(*e, static_cast<ColliderShape>(shape));
+            }
+            EditorUI::PropertyLabel("Is Trigger");
+            if (ImGui::Checkbox("##isTrigger", &c.isTrigger)) MarkEdited();
+            if (c.shape != ColliderShape::Mesh)
+            {
+                if (EditorUI::Vec3Field("Center", glm::value_ptr(c.center), 0.01f, 0.0f)) MarkEdited();
+            }
+            if (c.shape == ColliderShape::Box)
+            {
+                if (EditorUI::Vec3Field("Size", glm::value_ptr(c.size), 0.01f, 1.0f)) MarkEdited();
+            }
+            if (c.shape == ColliderShape::Sphere || c.shape == ColliderShape::Capsule)
+            {
+                EditorUI::PropertyLabel("Radius");
+                if (ImGui::DragFloat("##radius", &c.radius, 0.01f, 0.001f, 10000.0f)) MarkEdited();
+            }
+            if (c.shape == ColliderShape::Capsule)
+            {
+                EditorUI::PropertyLabel("Height");
+                if (ImGui::DragFloat("##height", &c.height, 0.01f, 0.001f, 10000.0f)) MarkEdited();
+            }
+            if (c.shape == ColliderShape::Mesh)
+            {
+                ImGui::TextDisabled(e->meshRenderer.enabled ? "Uses the Mesh Renderer's mesh (a convex hull on a\nnon-kinematic Rigidbody)."
+                                                            : "Needs a Mesh Renderer to take the mesh from.");
+            }
+            EditorUI::PropertyLabel("Friction");
+            if (ImGui::SliderFloat("##friction", &c.friction, 0.0f, 1.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Bounciness");
+            if (ImGui::SliderFloat("##bounciness", &c.bounciness, 0.0f, 1.0f)) MarkEdited();
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->collider.enabled = false;
         }
     }
 
@@ -682,6 +765,25 @@ void Editor::DrawInspector()
             {
                 PushUndo();
                 *item.flag = true;
+            }
+        }
+        ImGui::SeparatorText("Physics");
+        if (!e->rigidbody.enabled && ContainsNoCase("Rigidbody", m_AddComponentFilter) && ImGui::Selectable("Rigidbody"))
+        {
+            PushUndo();
+            e->rigidbody = RigidbodyComponent{};
+            e->rigidbody.enabled = true;
+        }
+        const char* colliders[] = { "Box Collider", "Sphere Collider", "Capsule Collider", "Mesh Collider" };
+        for (int i = 0; i < 4 && !e->collider.enabled; ++i)
+        {
+            if (!ContainsNoCase(colliders[i], m_AddComponentFilter)) continue;
+            if (ImGui::Selectable(colliders[i]))
+            {
+                PushUndo();
+                e->collider = ColliderComponent{};
+                e->collider.enabled = true;
+                FitCollider(*e, static_cast<ColliderShape>(i));
             }
         }
         if (!m_Scripts->Classes().empty())

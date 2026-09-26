@@ -14,6 +14,8 @@ namespace TheEngine
         public static float time { get; internal set; }
         public static int frameCount { get; internal set; }
         public static float timeScale { get; set; } = 1f;
+        /// <summary>Interval of FixedUpdate and physics steps (0.02 s).</summary>
+        public static float fixedDeltaTime { get; internal set; } = 0.02f;
     }
 
     public static unsafe class Debug
@@ -86,11 +88,21 @@ namespace TheEngine
                 return Native.Api.HasComponent(m_Id, (int)EngineComponent.Light) != 0 ? new Light { m_EntityId = m_Id } as T : null;
             if (typeof(T) == typeof(Camera))
                 return Native.Api.HasComponent(m_Id, (int)EngineComponent.Camera) != 0 ? new Camera { m_EntityId = m_Id } as T : null;
+            if (typeof(T) == typeof(Rigidbody))
+                return Native.Api.HasComponent(m_Id, (int)EngineComponent.Rigidbody) != 0 ? new Rigidbody { m_EntityId = m_Id } as T : null;
+            if (typeof(T) == typeof(Collider))
+                return Native.Api.HasComponent(m_Id, (int)EngineComponent.Collider) != 0 ? new Collider { m_EntityId = m_Id } as T : null;
             return Internal.ScriptHost.FindInstance<T>(m_Id);
         }
 
         /// <summary>Adds a script component at runtime (play mode only).</summary>
-        public T AddComponent<T>() where T : MonoBehaviour, new() => Internal.ScriptHost.AddComponent<T>(m_Id);
+        public T AddComponent<T>() where T : Component, new()
+        {
+            if (typeof(T) == typeof(Rigidbody)) { Native.Api.ComponentAdd(m_Id, (int)EngineComponent.Rigidbody); return GetComponent<T>(); }
+            if (typeof(T) == typeof(Collider)) { Native.Api.ComponentAdd(m_Id, (int)EngineComponent.Collider); return GetComponent<T>(); }
+            if (!typeof(MonoBehaviour).IsAssignableFrom(typeof(T))) throw new System.ArgumentException($"{typeof(T).Name} can't be added at runtime");
+            return (T)(object)Internal.ScriptHost.AddComponent(typeof(T), m_Id);
+        }
 
         public static GameObject Find(string name)
         {

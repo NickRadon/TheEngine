@@ -403,6 +403,87 @@ void Editor::EnableSelfTest(const std::string& captureDir)
         return false;
     } });
 
+    t.steps.push_back({ "physics (Jolt) + C# collision messages", [this, &t, find](int frame) {
+        const std::string path = "Assets/Scripts/PhysicsProbe.cs";
+        if (frame == 0)
+        {
+            std::ofstream(path) << "using TheEngine;\n"
+                                   "public class PhysicsProbe : MonoBehaviour\n{\n"
+                                   "    public int fixedSteps;\n"
+                                   "    public string hitName = \"\";\n"
+                                   "    public int triggerCount;\n"
+                                   "    public float groundDistance = -1f;\n"
+                                   "    void FixedUpdate() { fixedSteps++; }\n"
+                                   "    void OnCollisionEnter(Collision c) { if (hitName == \"\") hitName = c.gameObject.name; }\n"
+                                   "    void OnTriggerEnter(Collider other) { triggerCount++; }\n"
+                                   "    void Update()\n    {\n"
+                                   "        if (Physics.Raycast(transform.position + Vector3.down * 0.6f, Vector3.down, out RaycastHit hit, 100f))\n"
+                                   "            groundDistance = hit.distance;\n"
+                                   "    }\n}\n";
+            m_Scripts->RequestCompile();
+            t.scan = 0.0f;
+            return false;
+        }
+        if (frame < 5 || m_Scripts->IsCompiling()) return false;
+        if (t.scan == 0.0f)
+        {
+            if (!m_Scripts->FindClass("PhysicsProbe"))
+            {
+                t.Check(false, "PhysicsProbe.cs compiles");
+                return true;
+            }
+            Entity& trigger = m_Scene.Create("TriggerZone");
+            trigger.transform.position = { -3.0f, 2.0f, 3.0f };
+            trigger.collider.enabled = true;
+            trigger.collider.size = { 2.0f, 0.5f, 2.0f };
+            trigger.collider.isTrigger = true;
+
+            Entity& faller = m_Scene.Create("Faller");
+            faller.transform.position = { -3.0f, 4.0f, 3.0f };
+            faller.meshRenderer.enabled = true;
+            faller.meshRenderer.mesh = "Sphere";
+            AddDefaultCollider(faller);
+            faller.rigidbody.enabled = true;
+            ScriptComponent probe;
+            probe.className = "PhysicsProbe";
+            faller.scripts.push_back(probe);
+            EnterPlayMode();
+            t.Check(m_Playing && m_Physics.Running() && m_Physics.BodyCount() >= 5, "play mode builds physics bodies from colliders");
+            t.scan = 1.0f;
+            return false;
+        }
+        if (t.scan == 1.0f)
+        {
+            if (m_PlayTime < 3.0f) return false;
+            Entity* faller = find("Faller");
+            const float y = faller ? faller->transform.position.y : -100.0f;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "Rigidbody falls and rests on the ground's mesh collider (y=%.3f)", y);
+            t.Check(y > 0.45f && y < 0.6f, msg);
+            auto fields = faller ? m_Scripts->InstanceFields(m_Scripts->InstanceHandle(faller->id, 0)) : std::map<std::string, std::string>{};
+            const int fixedSteps = fields.count("fixedSteps") ? std::stoi(fields["fixedSteps"]) : 0;
+            std::snprintf(msg, sizeof(msg), "FixedUpdate runs at 50 Hz (%d steps in %.2f s)", fixedSteps, m_PlayTime);
+            t.Check(std::abs(fixedSteps - m_PlayTime * 50.0f) < 10.0f, msg);
+            t.Check(fields["hitName"] == "Ground", ("OnCollisionEnter(Collision) reports the ground (got '" + fields["hitName"] + "')").c_str());
+            t.Check(fields.count("triggerCount") && std::stoi(fields["triggerCount"]) >= 1, "OnTriggerEnter fires when passing through a trigger");
+            const float distance = fields.count("groundDistance") ? std::stof(fields["groundDistance"]) : -1.0f;
+            std::snprintf(msg, sizeof(msg), "Physics.Raycast hits the ground below (distance %.3f)", distance);
+            t.Check(distance > -0.01f && distance < 0.2f, msg);
+            ExitPlayMode();
+            t.scan = 2.0f;
+            return false;
+        }
+        Entity* faller = find("Faller");
+        t.Check(faller && std::fabs(faller->transform.position.y - 4.0f) < 1e-4f && !m_Physics.Running(),
+                "stopping play mode restores simulated transforms and stops physics");
+        if (faller) m_Scene.Destroy(faller->id);
+        if (Entity* trigger = find("TriggerZone")) m_Scene.Destroy(trigger->id);
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        m_Scripts->RequestCompile();
+        return true;
+    } });
+
     t.steps.push_back({ "no errors", [&t](int frame) {
         if (frame < 10) return false;
         const int errors = Log::CountOf(LogLevel::Error) - t.errorsAtStart - t.failures;

@@ -10,6 +10,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -237,8 +238,89 @@ void Editor::SceneViewToolsOverlay(ImVec2 origin)
     ImGui::PopStyleColor();
 }
 
+void Editor::DrawColliderGizmo(ImDrawList* dl, const Entity& e)
+{
+    // Unity's green collider wireframe for selected objects.
+    const ColliderComponent& c = e.collider;
+    const ImU32 color = IM_COL32(145, 244, 139, 210);
+    const glm::mat4 world = m_Scene.WorldMatrix(e.id);
+    glm::vec3 scale, pos, skew;
+    glm::vec4 persp;
+    glm::quat rot;
+    glm::decompose(world, scale, rot, pos, skew, persp);
+    scale = glm::abs(scale);
+    const glm::mat3 R = glm::mat3_cast(glm::normalize(rot));
+    const glm::vec3 center = pos + R * (c.center * scale);
+
+    auto line = [&](const glm::vec3& a, const glm::vec3& b) {
+        ImVec2 sa, sb;
+        if (WorldToScreen(a, sa) && WorldToScreen(b, sb)) dl->AddLine(sa, sb, color, 1.3f);
+    };
+    auto arc = [&](const glm::vec3& o, const glm::vec3& a, const glm::vec3& b, float r, float from, float to) {
+        const int n = 32;
+        for (int i = 0; i < n; ++i)
+        {
+            const float t0 = from + (to - from) * i / n, t1 = from + (to - from) * (i + 1) / n;
+            line(o + (a * std::cos(t0) + b * std::sin(t0)) * r, o + (a * std::cos(t1) + b * std::sin(t1)) * r);
+        }
+    };
+    const glm::vec3 X = R[0], Y = R[1], Z = R[2];
+    const float pi = glm::pi<float>();
+    switch (c.shape)
+    {
+    case ColliderShape::Box:
+    case ColliderShape::Mesh:
+    {
+        glm::vec3 half = c.size * scale * 0.5f;
+        glm::vec3 boxCenter = center;
+        if (c.shape == ColliderShape::Mesh)
+        {
+            const Mesh* mesh = e.meshRenderer.enabled ? m_Res->GetMesh(e.meshRenderer.mesh) : nullptr;
+            if (!mesh) return;
+            half = (mesh->data.boundsMax - mesh->data.boundsMin) * scale * 0.5f;
+            boxCenter = pos + R * ((mesh->data.boundsMax + mesh->data.boundsMin) * 0.5f * scale);
+        }
+        glm::vec3 corners[8];
+        for (int i = 0; i < 8; ++i)
+            corners[i] = boxCenter + X * ((i & 1) ? half.x : -half.x) + Y * ((i & 2) ? half.y : -half.y) + Z * ((i & 4) ? half.z : -half.z);
+        const int edges[12][2] = { {0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7} };
+        for (auto& edge : edges) line(corners[edge[0]], corners[edge[1]]);
+        break;
+    }
+    case ColliderShape::Sphere:
+    {
+        const float r = c.radius * std::max({ scale.x, scale.y, scale.z });
+        arc(center, X, Y, r, 0, 2 * pi);
+        arc(center, Y, Z, r, 0, 2 * pi);
+        arc(center, Z, X, r, 0, 2 * pi);
+        break;
+    }
+    case ColliderShape::Capsule:
+    {
+        const float r = c.radius * std::max(scale.x, scale.z);
+        const float half = std::max(c.height * scale.y * 0.5f - r, 0.0f);
+        const glm::vec3 top = center + Y * half, bottom = center - Y * half;
+        arc(top, X, Z, r, 0, 2 * pi);
+        arc(bottom, X, Z, r, 0, 2 * pi);
+        arc(top, X, Y, r, 0, pi);
+        arc(top, Z, Y, r, 0, pi);
+        arc(bottom, X, Y, r, pi, 2 * pi);
+        arc(bottom, Z, Y, r, pi, 2 * pi);
+        line(top + X * r, bottom + X * r);
+        line(top - X * r, bottom - X * r);
+        line(top + Z * r, bottom + Z * r);
+        line(top - Z * r, bottom - Z * r);
+        break;
+    }
+    }
+}
+
 void Editor::SceneViewIcons(ImDrawList* dl)
 {
+    for (EntityId id : m_Selection)
+        if (const Entity* e = m_Scene.Find(id); e && e->collider.enabled && m_Scene.IsActiveInHierarchy(id))
+            DrawColliderGizmo(dl, *e);
+
     for (const Entity& e : m_Scene.entities)
     {
         if (!(e.light.enabled || e.camera.enabled) || !m_Scene.IsActiveInHierarchy(e.id)) continue;

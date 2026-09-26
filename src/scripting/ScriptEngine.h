@@ -1,5 +1,6 @@
 #pragma once
 
+#include "physics/Physics.h"
 #include "scene/Scene.h"
 
 #include <atomic>
@@ -68,6 +69,8 @@ public:
     // Play mode
     void BeginPlay(Scene* scene);
     void Tick(float dt, float time, int frame);
+    void FixedTick(float fixedDt);                                // FixedUpdate on every script
+    void DispatchCollisions(const std::vector<CollisionEvent>& events); // OnCollision*/OnTrigger* messages
     void EndPlay();
     bool Playing() const { return m_Playing; }
     int InstanceHandle(EntityId entity, size_t scriptIndex) const;
@@ -77,6 +80,8 @@ public:
 
     // Context for engine callbacks made by scripts.
     void SetScene(Scene* scene) { m_Scene = scene; }
+    void SetPhysics(PhysicsWorld* physics) { m_Physics = physics; }
+    PhysicsWorld* GetPhysics() const { return m_Physics; }
     Scene* GetScene() const { return m_Scene; }
     ScriptInput& Input() { return m_Input; }
     void QueueDestroy(EntityId id) { m_DestroyQueue.push_back(id); }
@@ -112,6 +117,7 @@ private:
     int m_CompileExitCode = 0;
 
     Scene* m_Scene = nullptr;
+    PhysicsWorld* m_Physics = nullptr;
     ScriptInput m_Input;
     bool m_Playing = false;
     bool m_ReloadPending = false; // compiled during play mode; reload when play mode ends (like Unity)

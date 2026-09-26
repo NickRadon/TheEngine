@@ -211,6 +211,7 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------
     // Editor
     // ------------------------------------------------------------------
+    PhysicsWorld::GlobalInit();
     ResourceCache resources;
     resources.Init(&vk);
     ScriptEngine scripts;
@@ -242,6 +243,7 @@ int main(int argc, char** argv)
     scripts.Shutdown();
     renderer.Shutdown();
     resources.Shutdown();
+    PhysicsWorld::GlobalShutdown();
     shutdownImGui();
     return result;
 }

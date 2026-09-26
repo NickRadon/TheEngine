@@ -6,6 +6,8 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <cstdint>
+#include <functional>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -62,6 +64,33 @@ struct CameraComponent
     float orthoSize = 5.0f;
 };
 
+// Unity: Rigidbody. Entities with a collider but no rigidbody are static.
+struct RigidbodyComponent
+{
+    bool enabled = false;
+    float mass = 1.0f;
+    float drag = 0.0f;
+    float angularDrag = 0.05f;
+    bool useGravity = true;
+    bool isKinematic = false;
+};
+
+enum class ColliderShape : int { Box = 0, Sphere, Capsule, Mesh };
+
+// Unity: Box/Sphere/Capsule/Mesh Collider in one component. Sizes are in local space (scaled by the transform).
+struct ColliderComponent
+{
+    bool enabled = false;
+    ColliderShape shape = ColliderShape::Box;
+    glm::vec3 center{ 0.0f };
+    glm::vec3 size{ 1.0f };  // box
+    float radius = 0.5f;     // sphere / capsule
+    float height = 2.0f;     // capsule (total height along local Y)
+    bool isTrigger = false;
+    float friction = 0.6f;
+    float bounciness = 0.0f;
+};
+
 // A C# script attached to an entity (Unity: a MonoBehaviour component). Public field values are stored as
 // text so they survive script recompiles; the scripting layer converts them to/from managed values.
 struct ScriptField
@@ -91,7 +120,32 @@ struct Entity
     LightComponent light;
     CameraComponent camera;
     std::vector<ScriptComponent> scripts;
+    RigidbodyComponent rigidbody;
+    ColliderComponent collider;
+
+    // Prefab link: every entity of an instance has the local id it has inside the prefab; the instance root also
+    // stores the prefab path. prefabOverrides lists properties ("key:index") that differ from the prefab.
+    std::string prefab;
+    EntityId prefabId = kNullEntity;
+    std::vector<std::string> prefabOverrides;
 };
+
+// Adds the collider Unity gives each primitive (Cube -> Box, Sphere -> Sphere, Capsule/Cylinder -> Capsule, Plane/Quad -> Mesh).
+void AddDefaultCollider(Entity& e);
+
+// Per-entity serialization, shared by scenes and prefabs. Keys are unique within an entity ("transform",
+// "script#0", "field#0#speed"); line is the text written to the file.
+struct EntityProperty
+{
+    std::string key;
+    std::string line;
+};
+std::vector<EntityProperty> SerializeEntity(const Entity& e, bool includeObject);
+bool ParseEntityLine(Entity& e, const std::string& line);
+std::vector<std::string> TokenizeLine(const std::string& line);
+void WriteEntities(std::ostream& out, const std::vector<Entity>& entities);
+bool ReadEntities(std::istream& in, std::vector<Entity>& entities, EntityId& nextId,
+                  std::function<void(const std::string&, std::istringstream&)> other = nullptr);
 
 // Per-scene environment: procedural skybox (modeled after Unity's Skybox/Procedural, plus clouds and stars).
 struct SkySettings
