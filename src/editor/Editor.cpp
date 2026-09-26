@@ -59,6 +59,7 @@ bool Editor::Init(VulkanContext* vk, SceneRenderer* renderer, ResourceCache* res
     m_Scripts->SetAnimation(&m_Animation);
     m_Renderer->SetPaletteProvider([this](EntityId id) { return m_Animation.Palette(id); });
     m_Animation.onAnimatorMove = [this](EntityId id) { return m_Scripts->DispatchAnimatorMove(id); };
+    m_Animation.onAnimationStream = [this](EntityId id, AnimationStream& stream) { m_Scripts->DispatchAnimatorPose(id, stream); };
     ScanAssets();
     m_Scripts->RequestCompile();
 
@@ -152,6 +153,8 @@ void Editor::Update(float dt)
     DrawProject();
     DrawConsole();
     DrawAnimator();
+    DrawBlendMaskWindow();
+    DrawRigWindow();
     DrawToasts(dt);
     DrawAboutPopup();
     if (m_ShowDemo) ImGui::ShowDemoWindow(&m_ShowDemo);
@@ -330,10 +333,15 @@ void Editor::DrawMainMenu()
         ImGui::EndMenu();
     }
 
+    // Controller (Animator window) edits have their own history while that window has focus.
+    const bool animUndo = m_AnimFocused && AnimUndoAvailable();
+    const bool animRedo = m_AnimFocused && AnimRedoAvailable();
     if (ImGui::BeginMenu("Edit"))
     {
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !m_UndoStack.empty())) Undo();
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !m_RedoStack.empty())) Redo();
+        if (ImGui::MenuItem(animUndo ? "Undo Controller" : "Undo", "Ctrl+Z", false, animUndo || !m_UndoStack.empty()))
+        { if (animUndo) AnimUndo(); else Undo(); }
+        if (ImGui::MenuItem(animRedo ? "Redo Controller" : "Redo", "Ctrl+Y", false, animRedo || !m_RedoStack.empty()))
+        { if (animRedo) AnimRedo(); else Redo(); }
         ImGui::Separator();
         if (ImGui::MenuItem("Select All", "Ctrl+A")) SelectAll();
         if (ImGui::MenuItem("Deselect All", "Shift+D")) ClearSelection();
@@ -449,6 +457,7 @@ void Editor::DrawMainMenu()
         if (ImGui::BeginMenu("Animation"))
         {
             if (ImGui::MenuItem("Animator")) m_FocusAnimator = true;
+            if (ImGui::MenuItem("Blend Mask", nullptr, false, !m_MaskPath.empty())) m_FocusMask = true;
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Rendering"))
@@ -1347,8 +1356,18 @@ void Editor::HandleShortcuts()
     auto pressed = [](ImGuiKey k) { return ImGui::IsKeyPressed(k, false); };
 
     // Global shortcuts
-    if (ctrl && pressed(ImGuiKey_Z)) { shift ? Redo() : Undo(); return; }
-    if (ctrl && pressed(ImGuiKey_Y)) { Redo(); return; }
+    if (ctrl && pressed(ImGuiKey_Z))
+    {
+        if (m_AnimFocused && (shift ? AnimRedo() : AnimUndo())) return;
+        shift ? Redo() : Undo();
+        return;
+    }
+    if (ctrl && pressed(ImGuiKey_Y))
+    {
+        if (m_AnimFocused && AnimRedo()) return;
+        Redo();
+        return;
+    }
     if (ctrl && pressed(ImGuiKey_S)) { SaveScene(); return; }
     if (ctrl && pressed(ImGuiKey_N) && !shift) { NewScene(); return; }
     if (ctrl && pressed(ImGuiKey_P))

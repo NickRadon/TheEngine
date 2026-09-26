@@ -47,6 +47,7 @@ namespace TheEngine.Internal
             public MonoBehaviour Behaviour;
             public ulong Entity;
             public Action Awake, Start, Update, LateUpdate, FixedUpdate, OnDestroy, OnAnimatorMove;
+            public Action<AnimationStream> OnAnimatorPose;
             public Action<Collision> OnCollisionEnter, OnCollisionExit;
             public Action<Collider> OnTriggerEnter, OnTriggerExit;
             public bool Started;
@@ -200,6 +201,18 @@ namespace TheEngine.Internal
             return handled;
         }
 
+        /// <summary>Called during playable evaluation, before rig controls and skinning.</summary>
+        [UnmanagedCallersOnly]
+        public static void DispatchAnimatorPose(ulong entity)
+        {
+            foreach (Instance i in s_Instances.Values.Where(x => x.Entity == entity && x.OnAnimatorPose != null).ToList())
+            {
+                if (!i.Started || !i.Behaviour.enabled || !IsAlive(i)) continue;
+                try { i.OnAnimatorPose(new AnimationStream(entity)); }
+                catch (Exception e) { Report($"{i.Behaviour.GetType().Name}.OnAnimatorPose", e); }
+            }
+        }
+
         /// <summary>LateUpdate runs after animation (root motion) has been applied, like Unity.</summary>
         [UnmanagedCallersOnly]
         public static void LateTick()
@@ -312,6 +325,7 @@ namespace TheEngine.Internal
                 LateUpdate = Bind(behaviour, type, "LateUpdate"),
                 FixedUpdate = Bind(behaviour, type, "FixedUpdate"),
                 OnAnimatorMove = Bind(behaviour, type, "OnAnimatorMove"),
+                OnAnimatorPose = Bind<AnimationStream>(behaviour, type, "OnAnimatorPose"),
                 OnCollisionEnter = Bind<Collision>(behaviour, type, "OnCollisionEnter"),
                 OnCollisionExit = Bind<Collision>(behaviour, type, "OnCollisionExit"),
                 OnTriggerEnter = Bind<Collider>(behaviour, type, "OnTriggerEnter"),

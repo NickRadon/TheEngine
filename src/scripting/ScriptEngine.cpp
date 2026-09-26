@@ -61,6 +61,12 @@ struct ScriptNativeApi
     float (*AnimatorLayer)(uint64_t, const wchar_t*, int, int, float);
     void (*AnimatorLook)(uint64_t, float, float);
     void (*AnimatorDelta)(uint64_t, float*);
+    int (*AnimatorParamDamped)(uint64_t, const wchar_t*, float, float, float);
+    int (*AnimatorStateInfo)(uint64_t, int, float*);
+    int (*AnimatorStateNameAt)(uint64_t, int, int, wchar_t*, int);
+    int (*AnimatorLayerName)(uint64_t, int, wchar_t*, int);
+    int (*AnimatorParamInfo)(uint64_t, int, wchar_t*, int, float*);
+    int (*AnimatorStreamBone)(uint64_t, const wchar_t*, int, int, float*);
 };
 
 // Managed entry points (TheEngine.Internal.ScriptHost, [UnmanagedCallersOnly]).
@@ -81,12 +87,15 @@ struct ScriptEngine::Api
     void (*OnCollision)(uint64_t, uint64_t, int, const float*) = nullptr;
     void (*LateTick)() = nullptr;
     int (*DispatchAnimatorMove)(uint64_t) = nullptr;
+    void (*DispatchAnimatorPose)(uint64_t) = nullptr;
 };
 
 namespace
 {
     ScriptEngine* g_Engine = nullptr;
     ScriptNativeApi g_NativeApi{};
+    thread_local AnimationStream* g_ActiveAnimationStream = nullptr;
+    thread_local uint64_t g_ActiveAnimationEntity = 0;
     constexpr wchar_t kTypeSep = L'\x1D', kEntrySep = L'\x1E', kPartSep = L'\x1F';
 
     Scene* S() { return g_Engine ? g_Engine->GetScene() : nullptr; }
@@ -248,6 +257,7 @@ namespace
         case 8: out[0] = e->collider.enabled ? 1.0f : 0.0f; break;
         case 9: out[0] = e->animator.applyRootMotion ? 1.0f : 0.0f; break;
         case 10: out[0] = e->animator.enabled ? 1.0f : 0.0f; break;
+        case 11: out[0] = e->animator.active ? 1.0f : 0.0f; break;
         default: return 0;
         }
         return 1;
@@ -270,6 +280,7 @@ namespace
         case 8: e->collider.enabled = in[0] != 0.0f; break;
         case 9: e->animator.applyRootMotion = in[0] != 0.0f; break;
         case 10: e->animator.enabled = in[0] != 0.0f; break;
+        case 11: e->animator.active = in[0] != 0.0f; break;
         }
     }
 
@@ -519,6 +530,110 @@ namespace
         out[3] = q.x; out[4] = q.y; out[5] = q.z; out[6] = q.w;
     }
 
+    // Available only inside OnAnimatorPose. A copied managed AnimationStream cannot access a later frame.
+    int NAnimatorStreamBone(uint64_t id, const wchar_t* name, int modelSpace, int set, float* values)
+    {
+        if (!g_ActiveAnimationStream || g_ActiveAnimationEntity != id || !name || !values) return 0;
+        const BoneHandle bone = g_ActiveAnimationStream->Bind(Platform::Narrow(name));
+        if (!g_ActiveAnimationStream->Valid(bone)) return 0;
+        if (set)
+        {
+            BoneTransform transform;
+            transform.t = { values[0], values[1], values[2] };
+            transform.r = glm::normalize(glm::quat(values[6], values[3], values[4], values[5]));
+            transform.s = { values[7], values[8], values[9] };
+            return modelSpace ? g_ActiveAnimationStream->SetModel(bone, ToMatrix(transform)) :
+                                g_ActiveAnimationStream->SetLocal(bone, transform);
+        }
+        BoneTransform transform = g_ActiveAnimationStream->Local(bone);
+        if (modelSpace)
+        {
+            glm::vec3 skew;
+            glm::vec4 perspective;
+            if (!glm::decompose(g_ActiveAnimationStream->Model(bone), transform.s, transform.r, transform.t, skew, perspective)) return 0;
+        }
+        values[0] = transform.t.x; values[1] = transform.t.y; values[2] = transform.t.z;
+        values[3] = transform.r.x; values[4] = transform.r.y; values[5] = transform.r.z; values[6] = transform.r.w;
+        values[7] = transform.s.x; values[8] = transform.s.y; values[9] = transform.s.z;
+        return 1;
+    }
+
+    // The Animator of an entity, or null when it has no controller / the scene is not playing.
+    AnimatorInstance* AnimInstance(uint64_t id)
+    {
+        AnimationSystem* anim = g_Engine ? g_Engine->GetAnimation() : nullptr;
+        return anim ? anim->Instance(static_cast<EntityId>(id)) : nullptr;
+    }
+
+    int CopyWide(const std::wstring& text, wchar_t* buffer, int capacity)
+    {
+        if (!buffer || capacity <= 0) return 0;
+        const int n = std::min(static_cast<int>(text.size()), capacity - 1);
+        if (n > 0) std::memcpy(buffer, text.data(), n * sizeof(wchar_t));
+        buffer[n] = 0; // always terminated: some callers get a type/flag back, not the length
+        return n;
+    }
+
+    // Exponential approach to the target (Unity's damped SetFloat). Returns 1 when the parameter exists.
+    int NAnimatorParamDamped(uint64_t id, const wchar_t* name, float target, float dampTime, float dt)
+    {
+        AnimatorInstance* instance = AnimInstance(id);
+        return instance && instance->SetParamDamped(Platform::Narrow(name), target, dampTime, dt) ? 1 : 0;
+    }
+
+    // out: [0] current state, [1] next state, [2] normalized time, [3] transition progress,
+    //      [4] in transition, [5] interrupted blend, [6] layer weight. Returns the layer count (0 = none).
+    int NAnimatorStateInfo(uint64_t id, int layer, float* out)
+    {
+        if (!out) return 0;
+        std::memset(out, 0, sizeof(float) * 7);
+        AnimatorInstance* instance = AnimInstance(id);
+        if (!instance) return 0;
+        out[0] = static_cast<float>(instance->CurrentState(layer));
+        out[1] = static_cast<float>(instance->NextState(layer));
+        out[2] = instance->CurrentNormalizedTime(layer);
+        out[3] = instance->TransitionProgress(layer);
+        out[4] = instance->IsInTransition(layer) ? 1.0f : 0.0f;
+        out[5] = instance->TransitionInterrupted(layer) ? 1.0f : 0.0f;
+        out[6] = instance->LayerWeight(layer);
+        return instance->LayerCount();
+    }
+
+    // which: 0 = current state, 1 = destination of the running transition. Returns the name length.
+    int NAnimatorStateNameAt(uint64_t id, int layer, int which, wchar_t* buffer, int capacity)
+    {
+        AnimatorInstance* instance = AnimInstance(id);
+        if (!instance || !instance->Controller()) return 0;
+        const auto& layers = instance->Controller()->layers;
+        if (layer < 0 || layer >= static_cast<int>(layers.size())) return 0;
+        const int state = which == 1 ? instance->NextState(layer) : instance->CurrentState(layer);
+        if (state < 0 || state >= static_cast<int>(layers[layer].states.size())) return 0;
+        return CopyWide(Platform::Widen(layers[layer].states[state].name), buffer, capacity);
+    }
+
+    int NAnimatorLayerName(uint64_t id, int layer, wchar_t* buffer, int capacity)
+    {
+        AnimatorInstance* instance = AnimInstance(id);
+        if (!instance || !instance->Controller()) return 0;
+        const auto& layers = instance->Controller()->layers;
+        if (layer < 0 || layer >= static_cast<int>(layers.size())) return 0;
+        return CopyWide(Platform::Widen(layers[layer].name), buffer, capacity);
+    }
+
+    // index: parameter position in the controller. Returns its type (0 float, 1 int, 2 bool, 3 trigger),
+    // -1 when the index is out of range; the current value is written to `value`.
+    int NAnimatorParamInfo(uint64_t id, int index, wchar_t* buffer, int capacity, float* value)
+    {
+        if (value) *value = 0.0f;
+        AnimatorInstance* instance = AnimInstance(id);
+        if (!instance || !instance->Controller()) return -1;
+        const auto& params = instance->Controller()->params;
+        if (index < 0 || index >= static_cast<int>(params.size())) return -1;
+        if (value) *value = instance->GetParam(params[index].name);
+        CopyWide(Platform::Widen(params[index].name), buffer, capacity);
+        return static_cast<int>(params[index].type);
+    }
+
     // which: 0 lock state, 1 visible. value < 0 reads.
     int NCursorState(int which, int value)
     {
@@ -645,6 +760,7 @@ bool ScriptEngine::HostRuntime()
     get(L"OnCollision", m_Api->OnCollision);
     get(L"LateTick", m_Api->LateTick);
     get(L"DispatchAnimatorMove", m_Api->DispatchAnimatorMove);
+    get(L"DispatchAnimatorPose", m_Api->DispatchAnimatorPose);
     if (!ok) return false;
 
     g_NativeApi = {
@@ -654,6 +770,8 @@ bool ScriptEngine::HostRuntime()
         NComponentAdd, NRigidbodyGet, NRigidbodySet, NRigidbodyAddForce, NPhysicsRaycast, NPhysicsGravity,
         NEntityInstantiate, NPrefabInstantiate, NAnimatorParam, NAnimatorStateName, NCharacterMove, NCharacterGet, NCharacterSet,
         NCursorState, NAnimatorLayer, NAnimatorLook, NAnimatorDelta,
+        NAnimatorParamDamped, NAnimatorStateInfo, NAnimatorStateNameAt, NAnimatorLayerName, NAnimatorParamInfo,
+        NAnimatorStreamBone,
     };
     return m_Api->Initialize(&g_NativeApi) == 1;
 #else
@@ -910,6 +1028,18 @@ bool ScriptEngine::DispatchAnimatorMove(EntityId entity)
     if (!m_Playing) return false;
     const bool handled = m_Api->DispatchAnimatorMove(entity) != 0;
     return handled;
+}
+
+void ScriptEngine::DispatchAnimatorPose(EntityId entity, AnimationStream& stream)
+{
+    if (!m_Playing || !m_Api || !m_Api->DispatchAnimatorPose) return;
+    AnimationStream* previous = g_ActiveAnimationStream;
+    const uint64_t previousEntity = g_ActiveAnimationEntity;
+    g_ActiveAnimationStream = &stream;
+    g_ActiveAnimationEntity = entity;
+    m_Api->DispatchAnimatorPose(entity);
+    g_ActiveAnimationStream = previous;
+    g_ActiveAnimationEntity = previousEntity;
 }
 
 void ScriptEngine::LateTick()

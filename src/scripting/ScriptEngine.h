@@ -3,6 +3,7 @@
 #include "physics/Physics.h"
 
 class AnimationSystem;
+class AnimationStream;
 #include "scene/Scene.h"
 
 #include <atomic>
@@ -73,6 +74,7 @@ public:
     void Tick(float dt, float time, int frame);
     void LateTick();                                              // LateUpdate (after animation)
     bool DispatchAnimatorMove(EntityId entity);                   // OnAnimatorMove; true when a script handled it
+    void DispatchAnimatorPose(EntityId entity, AnimationStream& stream); // OnAnimatorPose; writable animation stream
     void FixedTick(float fixedDt);                                // FixedUpdate on every script
     void DispatchCollisions(const std::vector<CollisionEvent>& events); // OnCollision*/OnTrigger* messages
     void EndPlay();

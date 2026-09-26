@@ -1,6 +1,7 @@
 // Automated editor test (run with --selftest). Input is injected through ImGui's IO queue, so the real
 // editor code paths run (ImGuizmo, camera controls, shortcuts) without touching the OS mouse or keyboard.
 #include "editor/Editor.h"
+#include "anim/AnimationGraph.h"
 
 #include "core/Log.h"
 
@@ -9,6 +10,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -865,6 +867,850 @@ void Editor::EnableSelfTest(const std::string& captureDir)
 
         return true;
     } });
+
+    t.steps.push_back({ "animation: interruption, damping, layers, formats, validation", [this, &t](int frame) {
+        if (frame > 0) return true; // everything below runs synchronously in one frame
+
+        // ---------- Formats: files written by older versions must keep loading ----------
+        const std::string v1 =
+            "TheEngineAnimator 1\n"
+            "param \"Speed\" float 0\n"
+            "state \"Idle\" clip \"test:idle\" \"\" \"\" 1 1 40 200\n"
+            "state \"Move\" clip \"test:fwd\" \"\" \"\" 1 1 240 200\n"
+            "transition \"Idle\" \"Move\" 1 0.75 0.15\n"
+            "  condition \"Speed\" greater 0.1\n"
+            "default \"Idle\"\n";
+        AnimatorController v1c;
+        t.Check(v1c.LoadString(v1) && v1c.layers.size() == 1 && v1c.Base().states.size() == 2 &&
+                    v1c.Base().transitions.size() == 1 && v1c.Base().transitions[0].hasExitTime &&
+                    std::fabs(v1c.Base().transitions[0].duration - 0.15f) < 1e-4f &&
+                    v1c.Base().transitions[0].interruption == AnimInterruption::None &&
+                    !v1c.Base().transitions[0].ordered && v1c.Base().defaultState == "Idle",
+                "version 1 .controller files still load (single layer, no interruption tail)");
+
+        const std::string v2 =
+            "TheEngineAnimator 2\n"
+            "param \"Speed\" float 0\n"
+            "layer \"Base Layer\" 1 override\n"
+            "state \"Idle\" clip \"test:idle\" \"\" \"\" 1 1 40 200\n"
+            "default \"Idle\"\n"
+            "layer \"Upper\" 0.5 additive \"spine_01\"\n"
+            "state \"Raise\" clip \"test:raise\" \"\" \"\" 1 1 240 200\n"
+            "default \"Raise\"\n";
+        AnimatorController v2c;
+        t.Check(v2c.LoadString(v2) && v2c.layers.size() == 2 && v2c.layers[1].name == "Upper" &&
+                    v2c.layers[1].blending == AnimLayerBlending::Additive &&
+                    std::fabs(v2c.layers[1].weight - 0.5f) < 1e-4f && v2c.layers[1].mask.size() == 1 &&
+                    v2c.layers[1].mask[0] == "spine_01" && v2c.layers[1].defaultState == "Raise",
+                "version 2 .controller files still load (layers, weights, masks, additive)");
+
+        // ---------- Synthetic rig: root / pelvis / spine, with clips that move and deform ----------
+        Skeleton sk;
+        sk.names = { "root", "pelvis", "spine_01" };
+        sk.parents = { -1, 0, 1 };
+        sk.rest.resize(3);
+        sk.rest[1].t = glm::vec3(0.0f, 1.0f, 0.0f);
+        sk.rest[2].t = glm::vec3(0.0f, 0.5f, 0.0f);
+        sk.index = { { "root", 0 }, { "pelvis", 1 }, { "spine_01", 2 } };
+        sk.root = 0;
+        sk.pelvis = 1;
+
+        // Twists the spine over the clip (translation only animates on root/pelvis, see SampleClip).
+        auto makeClip = [&](const char* name, glm::vec2 velocity, float pelvisFrom, float pelvisTo, float spineFrom, float spineTo) {
+            AnimationClip c;
+            c.name = name;
+            c.fps = 30.0f;
+            c.duration = 1.0f;
+            c.frameCount = 31;
+            for (int b = 0; b < 3; ++b)
+            {
+                AnimationClip::Track tr;
+                tr.bone = sk.names[b];
+                tr.rest = sk.rest[b];
+                tr.frames.assign(31, sk.rest[b]);
+                if (b == 1)
+                {
+                    for (int f = 0; f < 31; ++f) tr.frames[f].t.y = pelvisFrom + (pelvisTo - pelvisFrom) * (f / 30.0f);
+                }
+                else if (b == 2)
+                {
+                    for (int f = 0; f < 31; ++f)
+                    {
+                        const float a = spineFrom + (spineTo - spineFrom) * (f / 30.0f);
+                        tr.frames[f].r = glm::angleAxis(a, glm::vec3(0.0f, 0.0f, 1.0f));
+                    }
+                }
+                c.tracks.push_back(tr);
+                c.trackIndex[tr.bone] = b;
+            }
+            for (int f = 0; f < 31; ++f)
+            {
+                const glm::vec2 xz = velocity * (f / 30.0f);
+                c.tracks[0].frames[f].t = glm::vec3(xz.x, 0.0f, xz.y);
+                c.rootXZ.push_back(xz);
+                c.rootYaw.push_back(0.0f);
+            }
+            c.rootTrack = 0;
+            c.hasRootMotion = glm::length(velocity) > 0.0f;
+            c.averageSpeed = glm::length(velocity);
+            return c;
+        };
+        ClipLibrary& clips = m_Animation.Clips();
+        clips.Add("i:idle", makeClip("idle", { 0.0f, 0.0f }, 1.0f, 1.0f, 0.0f, 0.0f));
+        clips.Add("i:fwd", makeClip("fwd", { 0.0f, -2.0f }, 1.0f, 1.0f, 0.0f, 0.0f));
+        clips.Add("i:right", makeClip("right", { 2.0f, 0.0f }, 1.0f, 1.0f, 0.0f, 0.0f));
+        clips.Add("i:raise", makeClip("raise", { 0.0f, -2.0f }, 1.0f, 1.5f, 0.0f, 0.6f));
+        clips.Add("i:lean", makeClip("lean", { 0.0f, -2.0f }, 1.2f, 1.4f, 0.0f, 0.4f));
+
+        Pose pose;
+        RootMotion motion, total;
+        auto run = [&](AnimatorInstance& instance, float seconds, bool accumulate) {
+            if (accumulate) total = {};
+            for (float time = 0.0f; time < seconds - 1e-4f; time += 1.0f / 60.0f)
+            {
+                instance.Update(1.0f / 60.0f, clips, sk, true, pose, motion);
+                if (accumulate) total.position += motion.position;
+            }
+        };
+        char msg[200];
+
+        // ---------- Interruption: a running transition can be interrupted by the next state ----------
+        AnimatorController ic;
+        ic.params = { { "Speed", AnimParamType::Float, 0.0f } };
+        AnimState sA; sA.name = "A"; sA.clip = "i:lean";
+        AnimState sB; sB.name = "B"; sB.clip = "i:raise";
+        ic.Base().states = { sA, sB };
+        ic.Base().defaultState = "A";
+        AnimTransition ab; ab.from = "A"; ab.to = "B"; ab.duration = 0.4f;
+        ab.interruption = AnimInterruption::Next;
+        ab.conditions = { { "Speed", AnimConditionMode::Greater, 0.1f } };
+        AnimTransition ba; ba.from = "B"; ba.to = "A"; ba.duration = 0.05f;
+        ba.conditions = { { "Speed", AnimConditionMode::Less, 0.1f } };
+        ic.Base().transitions = { ab, ba };
+
+        AnimatorInstance ai;
+        ai.Reset(ic);
+        ai.SetParam("Speed", 1.0f);
+        run(ai, 0.2f, false); // half way through the 0.4 s blend
+        t.Check(ai.CurrentState() == 0 && ai.NextState() == 1 && !ai.TransitionInterrupted(0),
+                "a transition blends towards its destination when nothing interrupts it");
+        const Pose before = pose;
+        ai.SetParam("Speed", 0.0f);
+        ai.Update(1.0f / 60.0f, clips, sk, true, pose, motion);
+        float jump = 0.0f;
+        for (size_t b = 0; b < pose.size(); ++b) jump = std::max(jump, glm::length(pose[b].t - before[b].t));
+        std::snprintf(msg, sizeof(msg), "the interrupted blend keeps playing instead of popping (pose jump %.4f m)", jump);
+        t.Check(ai.IsInTransition(0) && ai.TransitionInterrupted(0) && jump < 0.05f, msg);
+        t.Check(glm::length(motion.position) > 1e-5f, "root motion keeps flowing while a transition is interrupted");
+        run(ai, 0.3f, false);
+        t.Check(ai.CurrentState() == 0 && ai.NextState() < 0 && !ai.TransitionInterrupted(0),
+                "the interrupted chain settles in the state the new transition leads to");
+
+        // interruption = None: the running transition always finishes.
+        AnimatorController nc = ic;
+        nc.Base().transitions[0].interruption = AnimInterruption::None;
+        AnimatorInstance ni;
+        ni.Reset(nc);
+        ni.SetParam("Speed", 1.0f);
+        run(ni, 0.2f, false);
+        ni.SetParam("Speed", 0.0f);
+        run(ni, 0.1f, false);
+        t.Check(ni.NextState() == 1 && !ni.TransitionInterrupted(0), "interruption None: a running transition cannot be cut short");
+        ni.SetParam("Speed", 1.0f); // keep the B -> A transition from firing the moment we land in B
+        run(ni, 0.3f, false);
+        t.Check(ni.CurrentState() == 1 && ni.NextState() < 0, "interruption None: the blend reaches its destination anyway");
+
+        // ---------- Parameter damping ----------
+        AnimatorInstance di;
+        di.Reset(ic);
+        bool dampedOk = true;
+        for (int i = 0; i < 18; ++i) dampedOk = dampedOk && di.SetParamDamped("Speed", 1.0f, 0.5f, 1.0f / 60.0f);
+        const float half = di.GetParam("Speed");
+        for (int i = 0; i < 200; ++i) di.SetParamDamped("Speed", 1.0f, 0.5f, 1.0f / 60.0f);
+        const float settled = di.GetParam("Speed");
+        std::snprintf(msg, sizeof(msg), "damped parameters approach the target (%.2f after 0.3 s, %.2f after 3.6 s)", half, settled);
+        t.Check(dampedOk && half > 0.3f && half < 0.6f && settled > 0.95f, msg);
+        di.SetParam("Speed", 0.0f);
+        t.Check(di.SetParamDamped("Speed", 1.0f, 0.0f, 1.0f / 60.0f) && di.GetParam("Speed") == 1.0f,
+                "damp time 0 snaps to the target");
+        t.Check(!di.SetParamDamped("Nope", 1.0f, 0.5f, 1.0f / 60.0f), "damped set reports unknown parameters");
+
+        // ---------- 1D blend tree ----------
+        AnimatorController c1d;
+        c1d.params = { { "B", AnimParamType::Float, 0.0f } };
+        AnimState walk; walk.name = "Walk"; walk.type = AnimMotionType::BlendTree1D;
+        walk.paramX = "B";
+        walk.children = { { "i:idle", 0.0f, { 0.0f, 0.0f }, 1.0f }, { "i:fwd", 1.0f, { 0.0f, 0.0f }, 1.0f } };
+        c1d.Base().states = { walk };
+        c1d.Base().defaultState = "Walk";
+        AnimatorInstance wi;
+        wi.Reset(c1d);
+        wi.SetParam("B", 0.5f);
+        run(wi, 1.0f, true);
+        std::snprintf(msg, sizeof(msg), "1D blend tree interpolates thresholds (%.2f m over 1 s)", total.position.z);
+        t.Check(std::fabs(total.position.z + 1.0f) < 0.05f, msg);
+
+        // ---------- Layers: weight, mask, additive reference pose ----------
+        AnimatorController lc;
+        AnimState base; base.name = "Idle"; base.clip = "i:idle";
+        AnimState upper; upper.name = "Raise"; upper.clip = "i:raise";
+        upper.speed = 4.0f;
+        upper.loop = false;
+        lc.Base().states = { base };
+        lc.Base().defaultState = "Idle";
+        AnimLayer maskLayer;
+        maskLayer.name = "Masked";
+        maskLayer.mask = { "spine_01" };
+        maskLayer.states = { upper };
+        maskLayer.defaultState = "Raise";
+        lc.layers.push_back(maskLayer);
+        AnimatorInstance li;
+        li.Reset(lc);
+        run(li, 0.3f, false); // upper layer reaches its non-looping end
+        const auto spineTwist = [&]() { return 2.0f * std::acos(std::clamp(pose[2].r.w, -1.0f, 1.0f)); };
+        std::snprintf(msg, sizeof(msg), "a mask includes the listed bone (spine twist %.2f rad)", spineTwist());
+        t.Check(std::fabs(spineTwist() - 0.6f) < 0.01f, msg);
+        std::snprintf(msg, sizeof(msg), "a mask leaves the bones outside it alone (pelvis %.2f)", pose[1].t.y);
+        t.Check(std::fabs(pose[1].t.y - 1.0f) < 1e-3f, msg);
+
+        lc.layers[1].mask = { "pelvis" };
+        li.Reset(lc);
+        run(li, 0.3f, false);
+        std::snprintf(msg, sizeof(msg), "masking a bone also drives its children (pelvis %.2f, spine twist %.2f rad)", pose[1].t.y,
+                      spineTwist());
+        t.Check(std::fabs(pose[1].t.y - 1.5f) < 1e-3f && std::fabs(spineTwist() - 0.6f) < 0.01f, msg);
+
+        // Without a mask the whole body takes the layer's pose (the clip ends at pelvis 1.5).
+        lc.layers[1].mask.clear();
+        li.Reset(lc);
+        run(li, 0.3f, false);
+        std::snprintf(msg, sizeof(msg), "an unmasked override replaces the base pose (pelvis %.2f)", pose[1].t.y);
+        t.Check(std::fabs(pose[1].t.y - 1.5f) < 1e-3f, msg);
+
+        li.SetLayerWeight(1, 0.5f);
+        run(li, 0.3f, false);
+        std::snprintf(msg, sizeof(msg), "layer weight scales the override (pelvis %.2f)", pose[1].t.y);
+        t.Check(std::fabs(pose[1].t.y - 1.25f) < 1e-3f, msg);
+
+        lc.layers[1].blending = AnimLayerBlending::Additive;
+        lc.layers[1].states[0].clip = "i:lean"; // starts at 1.2 m and ends at 1.4 m
+        li.Reset(lc);
+        run(li, 0.3f, false);
+        // Reference pose = the layer's state at normalized time 0 (1.2 m): the delta 1.4 - 1.2 is added
+        // on top of the base pose (1.0 m).
+        std::snprintf(msg, sizeof(msg), "additive layers add the difference to their first frame (pelvis %.2f)", pose[1].t.y);
+        t.Check(std::fabs(pose[1].t.y - 1.2f) < 1e-3f, msg);
+
+        // ---------- Exit time on a non-looping state fires once ----------
+        AnimatorController xc;
+        AnimState long1; long1.name = "Long"; long1.clip = "i:raise"; long1.loop = false;
+        AnimState end1; end1.name = "End"; end1.clip = "i:idle";
+        xc.Base().states = { long1, end1 };
+        xc.Base().defaultState = "Long";
+        AnimTransition finish; finish.from = "Long"; finish.to = "End";
+        finish.hasExitTime = true;
+        finish.exitTime = 0.5f;
+        finish.duration = 0.05f;
+        xc.Base().transitions = { finish };
+        AnimatorInstance xi;
+        xi.Reset(xc);
+        run(xi, 0.3f, false);
+        t.Check(xi.CurrentState() == 0, "exit time 0.5 has not been reached yet in a non-looping state");
+        run(xi, 0.5f, false);
+        run(xi, 1.0f, false);
+        t.Check(xi.CurrentState() == 1 && xi.NextState() < 0, "exit time fires once when the non-looping state passes it");
+
+        // ---------- Root motion stops at the end of a non-looping state ----------
+        AnimatorController rc;
+        AnimState run1; run1.name = "Run"; run1.clip = "i:fwd"; run1.loop = false;
+        rc.Base().states = { run1 };
+        rc.Base().defaultState = "Run";
+        AnimatorInstance ri;
+        ri.Reset(rc);
+        run(ri, 2.0f, true);
+        std::snprintf(msg, sizeof(msg), "non-looping root motion stops at the clip's end (%.2f m)", total.position.z);
+        t.Check(std::fabs(total.position.z + 2.0f) < 0.05f, msg);
+
+        // ---------- Validation ----------
+        t.Check(ic.Validate(nullptr, &sk).empty(), "a well formed controller validates without warnings");
+        AnimatorController bad;
+        bad.params = { { "Speed", AnimParamType::Float, 0.0f } };
+        AnimState noClip; noClip.name = "NoClip"; noClip.clip = "missing:clip";
+        AnimState emptyTree; emptyTree.name = "EmptyTree"; emptyTree.type = AnimMotionType::BlendTree1D;
+        AnimState lonely; lonely.name = "Lonely"; lonely.clip = "i:idle";
+        bad.Base().states = { noClip, emptyTree, lonely };
+        bad.Base().defaultState = "NoClip";
+        AnimTransition broken;
+        broken.from = "NoClip";
+        broken.to = "EmptyTree";
+        broken.conditions = { { "NoSuchParam", AnimConditionMode::Greater, 1.0f } };
+        bad.Base().transitions = { broken };
+        bad.Base().mask = { "not_a_bone" };
+        AnimLayer extra;
+        extra.name = "Broken";
+        bad.layers.push_back(extra);
+        const std::vector<AnimIssue> issues = bad.Validate(nullptr, &sk);
+        bool mentionsTree = false, mentionsBone = false, mentionsParam = false, mentionsReachable = false;
+        for (const AnimIssue& is : issues)
+        {
+            mentionsTree |= is.text.find("blend tree") != std::string::npos;
+            mentionsBone |= is.text.find("not_a_bone") != std::string::npos;
+            mentionsParam |= is.text.find("NoSuchParam") != std::string::npos;
+            mentionsReachable |= is.text.find("unreachable") != std::string::npos;
+        }
+        std::snprintf(msg, sizeof(msg), "validation reports %zu problems (empty tree, mask bone, unknown parameter, unreachable state)",
+                      issues.size());
+        t.Check(issues.size() >= 4 && mentionsTree && mentionsBone && mentionsParam && mentionsReachable, msg);
+
+        // ---------- Current format round trip, plus version 3 compatibility ----------
+        const std::string text = ic.ToString();
+        AnimatorController current;
+        const bool currentOk = current.LoadString(text) && text.rfind("TheEngineAnimator 4", 0) == 0 &&
+                               text.find(" interrupt next ordered 0") != std::string::npos &&
+                               current.Base().transitions.size() == 2 &&
+                               current.Base().transitions[0].interruption == AnimInterruption::Next &&
+                               !current.Base().transitions[0].ordered &&
+                               current.Base().transitions[1].interruption == AnimInterruption::None;
+        t.Check(currentOk, "version 4 .controller files store and reload the interruption settings");
+
+        const std::string v3 =
+            "TheEngineAnimator 3\n"
+            "layer \"Base Layer\" 1 override\n"
+            "state \"A\" clip \"i:idle\" \"\" \"\" 1 1 40 200\n"
+            "state \"B\" clip \"i:raise\" \"\" \"\" 1 1 240 200\n"
+            "transition \"A\" \"B\" 0 0.75 0.2 interrupt current ordered 1\n"
+            "default \"A\"\n";
+        AnimatorController v3c;
+        t.Check(v3c.LoadString(v3) && v3c.Base().transitions.size() == 1 &&
+                    v3c.Base().transitions[0].interruption == AnimInterruption::Current && v3c.Base().transitions[0].ordered,
+                "version 3 .controller files still load (interruption settings, no mask asset)");
+
+        return true;
+    } });
+
+    t.steps.push_back({ "animation: Animator window controller undo and redo", [this, &t](int frame) {
+        const std::string path = "Assets/_undo.controller";
+        if (frame == 0)
+        {
+            AnimatorController fresh;
+            AnimState start;
+            start.name = "Start";
+            fresh.Base().states = { start };
+            fresh.Base().defaultState = "Start";
+            fresh.Save(path);
+            OpenAnimatorController(path);
+            return false;
+        }
+        AnimatorController* c = EditedController();
+        if (!c)
+        {
+            t.Check(false, "Animator window opens the controller that is edited");
+            return true;
+        }
+        if (frame == 1)
+        {
+            const std::string original = c->ToString();
+            m_AnimPreEdit = original; // what DrawAnimator records before a frame's widgets edit the controller
+            AnimState added;
+            added.name = "Added";
+            c->Base().states.push_back(added);
+            MarkAnimEdited();
+            const std::string edited = c->ToString();
+            const bool undone = AnimUndo() && EditedController()->ToString() == original;
+            t.Check(undone && !AnimUndoAvailable() && AnimRedoAvailable(), "controller undo restores the text from before the edit");
+            const bool redone = AnimRedo() && EditedController()->ToString() == edited;
+            t.Check(redone && AnimUndoAvailable() && !AnimRedoAvailable(), "controller redo re-applies the edit");
+            return false;
+        }
+        if (frame == 2)
+        {
+            SaveEditedController();
+            std::ifstream in(path);
+            const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            t.Check(text.find("\"Added\"") != std::string::npos, "the edited controller is written back to disk");
+            OpenAnimatorController(std::string());
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            return true;
+        }
+        return true;
+    } });
+
+    t.steps.push_back({ "animation: C# Animator API (defaults, active flag)", [this, &t, find](int frame) {
+        const std::string script = "Assets/Scripts/AnimApiDefaults.cs";
+        if (frame == 0)
+        {
+            std::ofstream(script) << R"PY(using TheEngine;
+
+// Reads the Animator API before any Animator instance exists (the object has an Animator
+// component but no skinned mesh) and round trips the Inspector's runtime-enable flag.
+public class AnimApiDefaults : MonoBehaviour
+{
+    public int layerCount;
+    public string layerName = "?";
+    public string stateName = "?";
+    public string currentStateName = "?";
+    public int parameterCount;
+    public bool triedParameter;
+    public int layerIndex;
+    public float layerWeight;
+    public float normalizedTime;
+    public bool inTransition;
+    public bool interrupted;
+    public bool animatorEnabled;
+    public bool rootMotion;
+    public bool activeBefore;
+    public bool activeAfterOff;
+    public bool activeAfterOn;
+
+    void OnAnimatorPose(AnimationStream stream)
+    {
+        BonePose pose;
+        if (stream.TryGetLocal("head", out pose)) stream.SetLocal("head", pose);
+    }
+
+    void Start()
+    {
+        Animator a = GetComponent<Animator>();
+        if (a == null) { Debug.LogError("AnimApiDefaults: this object has no Animator"); return; }
+        layerCount = a.layerCount;
+        layerName = a.GetLayerName(0);
+        stateName = a.StateName(0, false);
+        currentStateName = a.currentStateName;
+        parameterCount = a.parameterCount;
+        Animator.Parameter p;
+        triedParameter = a.TryGetParameter(0, out p);
+        layerIndex = a.GetLayerIndex("Base Layer");
+        layerWeight = a.GetLayerWeight(0);
+        Animator.LayerState s = a.GetState(0);
+        normalizedTime = s.normalizedTime;
+        inTransition = s.inTransition;
+        interrupted = s.interrupted;
+        animatorEnabled = a.enabled;
+        rootMotion = a.applyRootMotion;
+        activeBefore = a.active;
+        a.active = false;
+        activeAfterOff = a.active;
+        a.active = true;
+        activeAfterOn = a.active;
+        a.SetFloat("Speed", 1f, 0.5f, 0.016f); // no instance: a no-op, never a crash
+    }
+}
+)PY";
+            m_Scripts->RequestCompile();
+            t.scan = 0.0f;
+            return false;
+        }
+        if (frame < 5 || m_Scripts->IsCompiling()) return false;
+        if (t.scan == 0.0f)
+        {
+            if (!m_Scripts->FindClass("AnimApiDefaults"))
+            {
+                t.Check(false, "AnimApiDefaults.cs compiles");
+                return true;
+            }
+            Entity& host = m_Scene.Create("AnimApiHost");
+            host.animator.enabled = true;
+            ScriptComponent probe;
+            probe.className = "AnimApiDefaults";
+            host.scripts.push_back(probe);
+            EnterPlayMode();
+            t.scan = 1.0f;
+            return false;
+        }
+        if (t.scan == 1.0f)
+        {
+            if (m_PlayTime < 0.5f) return false;
+            Entity* host = find("AnimApiHost");
+            auto fields = host ? m_Scripts->InstanceFields(m_Scripts->InstanceHandle(host->id, 0)) : std::map<std::string, std::string>{};
+            auto get = [&fields](const char* key) {
+                auto it = fields.find(key);
+                return it == fields.end() ? std::string("<missing>") : it->second;
+            };
+            char msg[200];
+            std::snprintf(msg, sizeof(msg), "state queries answer with their documented defaults while nothing plays (layers %s, layer '%s', state '%s')",
+                          get("layerCount").c_str(), get("layerName").c_str(), get("stateName").c_str());
+            t.Check(get("layerCount") == "0" && get("layerName").empty() && get("stateName").empty() && get("currentStateName").empty(), msg);
+            std::snprintf(msg, sizeof(msg), "parameter enumeration ends immediately (%s) and TryGetParameter reports %s",
+                          get("parameterCount").c_str(), get("triedParameter").c_str());
+            t.Check(get("parameterCount") == "0" && get("triedParameter") == "0", msg);
+            std::snprintf(msg, sizeof(msg), "layer lookups answer without a controller (index %s, weight %s)",
+                          get("layerIndex").c_str(), get("layerWeight").c_str());
+            t.Check(get("layerIndex") == "-1" && get("layerWeight") == "0", msg);
+            t.Check(get("normalizedTime") == "0" && get("inTransition") == "0" && get("interrupted") == "0",
+                    "the layer state struct comes back zeroed (no transition, no interrupted blend)");
+            t.Check(get("animatorEnabled") == "1" && get("rootMotion") == "1", "Animator enabled / apply root motion read back from the component");
+            std::snprintf(msg, sizeof(msg), "the Inspector's Animator checkbox round-trips (before %s, off %s, on %s)", get("activeBefore").c_str(),
+                          get("activeAfterOff").c_str(), get("activeAfterOn").c_str());
+            t.Check(get("activeBefore") == "1" && get("activeAfterOff") == "0" && get("activeAfterOn") == "1", msg);
+            ExitPlayMode();
+            t.scan = 2.0f;
+            return false;
+        }
+        if (Entity* host = find("AnimApiHost")) m_Scene.Destroy(host->id);
+        std::error_code ec;
+        std::filesystem::remove(script, ec);
+        m_Scripts->RequestCompile();
+        return true;
+    } });
+
+    t.steps.push_back({ "animation: blend mask assets and upper body layering", [this, &t](int frame) {
+        if (frame > 0) return true;
+
+        const std::string maskPath = "Assets/_test.mask";
+        const std::string yamlPath = "Assets/_unity_test.mask";
+        const std::string controllerPath = "Assets/_mask_test.controller";
+        const std::string editedPath = "Assets/_edited_test.mask";
+
+        BlendMask source;
+        source.Add("spine_01");
+        source.Add("hand_r");
+        BlendMask parsed;
+        const std::string maskText = source.ToString();
+        t.Check(parsed.LoadString(maskText) && parsed.bones == source.bones && maskText.rfind("TheEngineMask 1", 0) == 0,
+                ".mask text round-trips its ordered include list");
+        source.Save(maskPath);
+        std::ofstream(yamlPath) << "--- !u!114 &1\nAvatarMask:\n";
+        t.Check(BlendMask::IsMaskFile(maskPath) && !BlendMask::IsMaskFile(yamlPath),
+                "blend mask detection accepts TheEngine assets and rejects Unity YAML .mask files");
+
+        AnimatorController controller;
+        AnimState idle; idle.name = "Idle"; idle.clip = "masktest:base"; idle.loop = false;
+        controller.Base().states = { idle };
+        controller.Base().defaultState = "Idle";
+        AnimLayer upper;
+        upper.name = "Upper";
+        upper.maskAsset = maskPath;
+        upper.RefreshMaskAsset();
+        AnimState raise; raise.name = "Raise"; raise.clip = "masktest:upper"; raise.loop = false;
+        upper.states = { raise };
+        upper.defaultState = "Raise";
+        controller.layers.push_back(upper);
+        controller.Save(controllerPath);
+        AnimatorController loaded;
+        std::ifstream controllerFile(controllerPath);
+        const std::string controllerText((std::istreambuf_iterator<char>(controllerFile)), std::istreambuf_iterator<char>());
+        const bool v4ok = loaded.Load(controllerPath) && controllerText.rfind("TheEngineAnimator 4", 0) == 0 &&
+                          controllerText.find("@mask \"Assets/_test.mask\"") != std::string::npos &&
+                          loaded.layers.size() == 2 && loaded.layers[1].maskAsset == maskPath &&
+                          loaded.layers[1].EffectiveMask() == source.bones;
+        t.Check(v4ok, "version 4 controllers preserve a blend mask reference and resolve its bones");
+
+        Skeleton skeleton;
+        skeleton.names = { "root", "pelvis", "spine_01" };
+        skeleton.parents = { -1, 0, 1 };
+        skeleton.rest.resize(3);
+        skeleton.rest[1].t.y = 1.0f;
+        skeleton.rest[2].t.y = 0.5f;
+        skeleton.index = { { "root", 0 }, { "pelvis", 1 }, { "spine_01", 2 } };
+        skeleton.root = 0;
+        skeleton.pelvis = 1;
+        auto maskClip = [&](const char* name, float pelvisY, float spineAngle) {
+            AnimationClip clip;
+            clip.name = name;
+            clip.fps = 1.0f;
+            clip.duration = 1.0f;
+            clip.frameCount = 2;
+            for (int bone = 0; bone < 3; ++bone)
+            {
+                AnimationClip::Track track;
+                track.bone = skeleton.names[bone];
+                track.rest = skeleton.rest[bone];
+                track.frames = { skeleton.rest[bone], skeleton.rest[bone] };
+                clip.trackIndex[track.bone] = bone;
+                clip.tracks.push_back(track);
+            }
+            clip.tracks[1].frames[1].t.y = pelvisY;
+            clip.tracks[2].frames[1].r = glm::angleAxis(spineAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+            return clip;
+        };
+        ClipLibrary& clips = m_Animation.Clips();
+        clips.Add("masktest:base", maskClip("mask base", 2.0f, 0.0f));
+        clips.Add("masktest:upper", maskClip("mask upper", 4.0f, 0.8f));
+        AnimatorInstance instance;
+        instance.Reset(loaded);
+        Pose pose;
+        RootMotion motion;
+        instance.Update(1.0f, clips, skeleton, false, pose, motion);
+        const float spineAngle = 2.0f * std::acos(std::clamp(pose[2].r.w, -1.0f, 1.0f));
+        char msg[180];
+        std::snprintf(msg, sizeof(msg), "asset mask keeps pelvis from base (%.2f) and spine rotation from upper layer (%.2f rad)",
+                      pose[1].t.y, spineAngle);
+        t.Check(pose.size() == 3 && std::fabs(pose[1].t.y - 2.0f) < 1e-4f && std::fabs(spineAngle - 0.8f) < 1e-4f, msg);
+
+        AnimatorController missing = controller;
+        missing.layers[1].maskAsset = "Assets/_missing_test.mask";
+        missing.layers[1].RefreshMaskAsset();
+        bool missingIssue = false;
+        for (const AnimIssue& issue : missing.Validate(nullptr, &skeleton))
+            missingIssue |= issue.text.find("could not be loaded") != std::string::npos;
+        t.Check(missingIssue && !missing.layers[1].DrivesWholeBody(),
+                "a missing assigned mask reports a warning and drives no bones");
+
+        BlendMask invalid;
+        invalid.Add("not_in_rig");
+        invalid.Save(maskPath);
+        controller.layers[1].RefreshMaskAsset();
+        bool boneIssue = false;
+        for (const AnimIssue& issue : controller.Validate(nullptr, &skeleton))
+            boneIssue |= issue.text.find("not_in_rig") != std::string::npos;
+        t.Check(boneIssue, "validation reports blend-mask bones that are not in the rig");
+
+        BlendMask editable;
+        editable.Add("spine_01");
+        editable.Save(editedPath);
+        OpenBlendMask(editedPath);
+        m_Mask.Remove("spine_01");
+        m_Mask.Add("hand_r");
+        SaveBlendMask();
+        BlendMask written;
+        t.Check(written.Load(editedPath) && written.bones.size() == 1 && written.bones[0] == "hand_r",
+                "the Blend Mask editor path writes checkbox-style changes back to the asset");
+
+        m_MaskPath.clear();
+        m_Mask = {};
+        std::error_code ec;
+        for (const std::string& path : { maskPath, yamlPath, controllerPath, editedPath }) std::filesystem::remove(path, ec);
+        return true;
+    } });
+
+    t.steps.push_back({ "animation: writable stream and playable graph", [this, &t, captureDir](int frame) {
+        if (frame > 0) return true;
+        Skeleton rig;
+        rig.names = { "root", "spine", "ik_hand_r" };
+        rig.parents = { -1, 0, 1 };
+        rig.rest.resize(3);
+        rig.rest[1].t = { 0, 1, 0 };
+        rig.rest[2].t = { 1, 0, 0 };
+        rig.index = { { "root", 0 }, { "spine", 1 }, { "ik_hand_r", 2 } };
+        Pose pose = rig.rest;
+        RootMotion motion;
+        AnimationStream stream(rig, pose, motion);
+        const BoneHandle spine = stream.Bind("spine"), hand = stream.Bind("ik_hand_r");
+        const glm::vec3 originalHand(stream.Model(hand)[3]);
+        BoneTransform turn = stream.Local(spine);
+        turn.r = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 0, 1));
+        stream.SetLocal(spine, turn);
+        const glm::vec3 turnedHand(stream.Model(hand)[3]);
+        const bool moved = glm::length(turnedHand - originalHand) > 0.5f;
+        const bool restored = stream.SetModel(hand, glm::translate(glm::mat4(1), originalHand)) &&
+                              glm::length(glm::vec3(stream.Model(hand)[3]) - originalHand) < 1e-4f;
+        t.Check(moved && restored && !stream.Valid({ &rig, 99 }),
+                "stream handles read and write local/model bone transforms after parent edits");
+
+        auto makeClip = [&](const char* name, float handX) {
+            AnimationClip clip;
+            clip.name = name;
+            clip.duration = 1.0f;
+            clip.fps = 1.0f;
+            clip.frameCount = 2;
+            AnimationClip::Track track;
+            track.bone = "ik_hand_r";
+            track.rest = rig.rest[2];
+            track.frames = { rig.rest[2], rig.rest[2] };
+            track.frames[1].t.x = handX;
+            clip.trackIndex["ik_hand_r"] = 0;
+            clip.tracks.push_back(track);
+            return clip;
+        };
+        ClipLibrary clips;
+        clips.Add("streamtest:a", makeClip("a", 2.0f));
+        clips.Add("streamtest:b", makeClip("b", 4.0f));
+        AnimationGraph graph;
+        const auto a = graph.AddClip("streamtest:a", 1.0f, false);
+        const auto b = graph.AddClip("streamtest:b", 1.0f, false);
+        const auto mix = graph.AddMixer(a, b, 0.25f);
+        graph.SetOutput(graph.AddJob(mix, [](AnimationStream& output) {
+            const BoneHandle bone = output.Bind("ik_hand_r");
+            BoneTransform transform = output.Local(bone);
+            transform.t.x += 1.0f;
+            output.SetLocal(bone, transform);
+        }));
+        const bool evaluated = graph.Evaluate(1.0f, clips, rig, true, false, pose, motion);
+        t.Check(evaluated && pose.size() == 3 && std::abs(pose[2].t.x - 3.5f) < 1e-4f,
+                "clip sources, a weighted mixer and a writable job evaluate in graph order");
+
+        const char* aeOverride = std::getenv("THEENGINE_AE_ASSETS");
+        const char* profile = std::getenv("USERPROFILE");
+        const std::filesystem::path aeAssets = aeOverride ? std::filesystem::path(aeOverride) :
+            profile ? std::filesystem::path(profile) / "Documents/Unity Projects/AE Master/Assets/AE" : std::filesystem::path();
+        const std::filesystem::path ak = aeAssets / "Weapons/AK/Animations/Character/A_FP_AK_Idle.fbx";
+        if (std::filesystem::exists(ak))
+        {
+            AnimationClip imported;
+            const bool ok = LoadFbxClip(ak.string(), "", imported);
+            bool hasHands = false, hasIk = false;
+            for (const auto& track : imported.tracks)
+            {
+                hasHands |= track.bone == "hand_l" || track.bone == "hand_r";
+                hasIk |= track.bone.find("ik_hand") != std::string::npos;
+            }
+            t.Check(ok && imported.frameCount > 0 && hasHands && hasIk,
+                    "AE folder AK character idle FBX imports hand and IK-target tracks");
+        }
+        const std::filesystem::path bodySource = aeAssets / "Meshes/Character/Quantum_Body_Full.fbx";
+        if (std::filesystem::exists(bodySource))
+        {
+            const std::filesystem::path body = "Assets/_ae_test/Quantum_Body_Full.fbx";
+            std::filesystem::create_directories(body.parent_path());
+            std::filesystem::copy_file(bodySource, body, std::filesystem::copy_options::overwrite_existing);
+            std::vector<MeshData> meshes;
+            ModelAsset model;
+            const bool imported = ImportFbxModel(body.string(), meshes, model);
+            const Skeleton* skeleton = model.skeleton.get();
+            t.Check(imported && skeleton && skeleton->Find("head") >= 0 && skeleton->Find("ik_hand_gun") >= 0 &&
+                        skeleton->Find("hand_l") >= 0 && skeleton->Find("hand_r") >= 0,
+                    "AE Quantum body supplies AK head, hand and weapon IK bones");
+            const ModelAsset* liveModel = m_Res->GetModel(body.string());
+            std::string meshRef;
+            if (liveModel)
+                for (int i = 0; i < liveModel->meshCount; ++i)
+                {
+                    const std::string candidate = body.string() + "#" + std::to_string(i);
+                    const Mesh* mesh = m_Res->GetMesh(candidate);
+                    if (mesh && mesh->data.Skinned()) { meshRef = candidate; break; }
+                }
+            const std::filesystem::path rigPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+                                                   "tests/assets/AE_AK.rig";
+            if (!meshRef.empty() && std::filesystem::exists(rigPath) && std::filesystem::exists(ak))
+            {
+                AnimatorController controller;
+                AnimState idle; idle.name = "Idle"; idle.clip = ak.string(); idle.loop = true;
+                controller.Base().states = { idle };
+                controller.Base().defaultState = "Idle";
+                const std::string controllerPath = "Assets/_ae_ak_test.controller";
+                controller.Save(controllerPath);
+                Scene rigScene;
+                Entity& character = rigScene.Create("AE AK Character");
+                character.meshRenderer.enabled = true;
+                character.meshRenderer.mesh = meshRef;
+                character.animator.enabled = true;
+                character.animator.controller = controllerPath;
+                character.animator.rig = rigPath.string();
+                AnimationSystem system;
+                system.Init(m_Res);
+                int streamCalls = 0;
+                system.onAnimationStream = [&](EntityId id, AnimationStream& stream) {
+                    if (id != character.id) return;
+                    ++streamCalls;
+                    const BoneHandle weapon = stream.Bind("ik_hand_gun");
+                    BoneTransform source = stream.Local(weapon);
+                    source.t.x += 0.01f;
+                    stream.SetLocal(weapon, source);
+                };
+                system.Update(rigScene, 0.0f, false);
+                const Skeleton* augmented = system.SkeletonOf(character.id);
+                glm::mat4 before(1), after(1), handL(1), gripL(1), handR(1), gripR(1);
+                const bool prepared = augmented && augmented->Find("vb_ak_weapon") >= 0 &&
+                                      system.BoneModelMatrix(character.id, "vb_ak_weapon", before);
+                system.SetLook(character.id, 20.0f, 15.0f);
+                system.Update(rigScene, 0.0f, false);
+                const bool followed = system.BoneModelMatrix(character.id, "vb_ak_weapon", after) &&
+                                      system.BoneModelMatrix(character.id, "hand_l", handL) &&
+                                      system.BoneModelMatrix(character.id, "vb_ak_hand_l", gripL) &&
+                                      system.BoneModelMatrix(character.id, "hand_r", handR) &&
+                                      system.BoneModelMatrix(character.id, "vb_ak_hand_r", gripR);
+                const float weaponShift = glm::length(glm::vec3(before[3] - after[3]));
+                const float leftError = glm::length(glm::vec3(handL[3] - gripL[3]));
+                const float rightError = glm::length(glm::vec3(handR[3] - gripR[3]));
+                char status[200];
+                std::snprintf(status, sizeof(status), "AE AK rig copies targets before look, bends the head weapon helper (%.3f m), solves arms (L %.3f, R %.3f m)",
+                              weaponShift, leftError, rightError);
+                t.Check(prepared && followed && streamCalls == 2 && weaponShift > 0.001f &&
+                            leftError < 0.1f && rightError < 0.1f, status);
+                std::error_code ec;
+                std::filesystem::remove(controllerPath, ec);
+            }
+            std::error_code cleanupError;
+            const auto target = std::filesystem::weakly_canonical(body.parent_path(), cleanupError);
+            const auto assetsRoot = std::filesystem::weakly_canonical("Assets", cleanupError);
+            if (captureDir.empty() && !cleanupError && target.parent_path() == assetsRoot)
+                std::filesystem::remove_all(target, cleanupError);
+        }
+        return true;
+    } });
+
+    if (!captureDir.empty())
+        t.steps.push_back({ "animation: capture AE AK aim", [this, &t, captureDir](int frame) {
+            static EntityId actorId = kNullEntity;
+            static glm::vec3 oldPivot;
+            static glm::quat oldRotation;
+            static float oldDistance = 5.0f;
+            const std::filesystem::path body = "Assets/_ae_test/Quantum_Body_Full.fbx";
+            const char* aeOverride = std::getenv("THEENGINE_AE_ASSETS");
+            const char* profile = std::getenv("USERPROFILE");
+            const std::filesystem::path aeAssets = aeOverride ? std::filesystem::path(aeOverride) :
+                profile ? std::filesystem::path(profile) / "Documents/Unity Projects/AE Master/Assets/AE" : std::filesystem::path();
+            const std::filesystem::path clip = aeAssets / "Weapons/AK/Animations/Character/A_FP_AK_Idle.fbx";
+            const std::filesystem::path weaponSource = aeAssets / "Weapons/AK/Animations/Weapon/A_W_AK_Idle.fbx";
+            const std::filesystem::path weapon = "Assets/_ae_test/A_W_AK_Idle.fbx";
+            const std::filesystem::path rigPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+                                                   "tests/assets/AE_AK.rig";
+            const std::string controllerPath = "Assets/_ae_ak_visual.controller";
+            if (frame == 0)
+            {
+                if (!std::filesystem::exists(body) || !std::filesystem::exists(clip) || !std::filesystem::exists(weaponSource)) return true;
+                std::filesystem::copy_file(weaponSource, weapon, std::filesystem::copy_options::overwrite_existing);
+                const ModelAsset* bodyModel = m_Res->GetModel(body.string());
+                const ModelAsset* weaponModel = m_Res->GetModel(weapon.string());
+                if (!bodyModel || !weaponModel) { t.Check(false, "AE AK visual assets import"); return true; }
+                AnimatorController controller;
+                AnimState idle; idle.name = "Idle"; idle.clip = clip.string();
+                controller.Base().states = { idle };
+                controller.Base().defaultState = "Idle";
+                controller.Save(controllerPath);
+                oldPivot = m_Camera.Pivot(); oldRotation = m_Camera.Rotation(); oldDistance = m_Camera.Distance();
+                Entity& character = m_Scene.Create("AE AK Visual Test");
+                actorId = character.id;
+                character.transform.position = { 20, 0, 0 };
+                character.meshRenderer.enabled = true;
+                character.meshRenderer.mesh = body.string() + "#0";
+                character.animator.enabled = true;
+                character.animator.controller = controllerPath;
+                character.animator.rig = rigPath.string();
+                for (int i = 1; i < bodyModel->meshCount; ++i)
+                {
+                    Entity& part = m_Scene.Create("Quantum Part " + std::to_string(i));
+                    part.meshRenderer.enabled = true;
+                    part.meshRenderer.mesh = body.string() + "#" + std::to_string(i);
+                    m_Scene.SetParent(part.id, actorId, false);
+                }
+                Entity& rifle = m_Scene.Create("AE AK Weapon");
+                const EntityId weaponId = rifle.id;
+                rifle.meshRenderer.enabled = true;
+                rifle.meshRenderer.mesh = weapon.string() + "#0";
+                rifle.boneSocket.enabled = true;
+                rifle.boneSocket.bone = "vb_ak_weapon";
+                m_Scene.SetParent(weaponId, actorId, false);
+                for (int i = 1; i < weaponModel->meshCount; ++i)
+                {
+                    Entity& part = m_Scene.Create("AK Part " + std::to_string(i));
+                    part.meshRenderer.enabled = true;
+                    part.meshRenderer.mesh = weapon.string() + "#" + std::to_string(i);
+                    m_Scene.SetParent(part.id, weaponId, false);
+                }
+                ClearSelection();
+                m_Camera.SetOrthographic(false);
+                m_Camera.SetState({ 20.0f, 1.2f, 0.0f }, glm::angleAxis(glm::radians(180.0f), glm::vec3(0, 1, 0)), 3.0f, false);
+                return false;
+            }
+            if (frame == 15) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ae_ak_neutral.bmp");
+            if (frame == 16) m_Animation.SetLook(actorId, 20.0f, 15.0f);
+            if (frame == 35) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ae_ak_aim.bmp");
+            if (frame < 36) return false;
+            const bool captured = std::filesystem::exists(captureDir + "/ae_ak_neutral.bmp") &&
+                                  std::filesystem::exists(captureDir + "/ae_ak_aim.bmp");
+            t.Check(captured, "AE AK neutral and angled aim frames captured for review");
+            if (actorId != kNullEntity) m_Scene.Destroy(actorId);
+            actorId = kNullEntity;
+            m_Camera.SetState(oldPivot, oldRotation, oldDistance, false);
+            std::error_code ec;
+            std::filesystem::remove(controllerPath, ec);
+            const auto target = std::filesystem::weakly_canonical(body.parent_path(), ec);
+            const auto assetsRoot = std::filesystem::weakly_canonical("Assets", ec);
+            if (!ec && target.parent_path() == assetsRoot) std::filesystem::remove_all(target, ec);
+            return true;
+        } });
 
     t.steps.push_back({ "no errors", [&t](int frame) {
         if (frame < 10) return false;

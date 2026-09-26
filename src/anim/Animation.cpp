@@ -261,7 +261,8 @@ const AnimationClip* ClipLibrary::Get(const std::string& ref)
         LoadUnityFloatCurves(path, *clip);
         if (!clip->floatCurves.empty()) LOG_INFO("  %s: %zu float curves from the Unity .anim", ref.c_str(), clip->floatCurves.size());
     }
-    if (!clip) {}
+    if (!clip)
+        LOG_WARN("Animation clip could not be loaded: %s", ref.c_str()); // cached: reported once per reference
     else if (clip->hasRootMotion) LOG_INFO("Loaded animation %s (%.2f s, root motion %.2f m/s)", ref.c_str(), clip->duration, clip->averageSpeed);
     else LOG_INFO("Loaded animation %s (%.2f s)", ref.c_str(), clip->duration);
     return (m_Clips[ref] = std::move(clip)).get();

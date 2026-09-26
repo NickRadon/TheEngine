@@ -1,5 +1,7 @@
 #include "anim/AnimatorController.h"
 
+#include "anim/BlendMask.h"
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -13,6 +15,7 @@ namespace
     const char* kModeNames[] = { "if", "ifnot", "greater", "less", "equals", "notequal" };
     const char* kMotionNames[] = { "clip", "blend1d", "blend2d" };
     const char* kBlendNames[] = { "override", "additive" };
+    const char* kInterruptNames[] = { "none", "current", "next", "current_next", "next_current" };
 
     template <size_t N>
     int IndexOf(const char* (&names)[N], const std::string& s)
@@ -20,6 +23,12 @@ namespace
         for (size_t i = 0; i < N; ++i)
             if (s == names[i]) return static_cast<int>(i);
         return 0;
+    }
+
+    template <size_t N>
+    const char* NameOf(const char* (&names)[N], int i)
+    {
+        return i >= 0 && i < static_cast<int>(N) ? names[i] : names[0];
     }
 }
 
@@ -37,11 +46,9 @@ bool AnimatorController::IsControllerFile(const std::string& path)
     return header == "TheEngineAnimator";
 }
 
-bool AnimatorController::Save(const std::string& path) const
+bool AnimatorController::Save(std::ostream& out) const
 {
-    std::ofstream out(path);
-    if (!out) return false;
-    out << "TheEngineAnimator 2\n";
+    out << "TheEngineAnimator " << kCurrentVersion << "\n";
     for (const AnimParam& p : params)
         out << "param " << std::quoted(p.name) << ' ' << kTypeNames[static_cast<int>(p.type)] << ' ' << p.defaultValue << "\n";
     for (const AnimLayer& l : layers)
@@ -49,6 +56,8 @@ bool AnimatorController::Save(const std::string& path) const
         out << "layer " << std::quoted(l.name) << ' ' << l.weight << ' ' << kBlendNames[static_cast<int>(l.blending)];
         for (const std::string& bone : l.mask) out << ' ' << std::quoted(bone);
         if (l.meshSpaceRotation) out << " @meshspace";
+        // Version 4 field; version 1-3 readers would take the path for a bone name.
+        if (!l.maskAsset.empty()) out << " @mask " << std::quoted(l.maskAsset);
         out << "\n";
         for (const AnimState& s : l.states)
         {
@@ -61,7 +70,9 @@ bool AnimatorController::Save(const std::string& path) const
         for (const AnimTransition& t : l.transitions)
         {
             out << "transition " << std::quoted(t.from) << ' ' << std::quoted(t.to) << ' ' << t.hasExitTime << ' ' << t.exitTime << ' '
-                << t.duration << "\n";
+                << t.duration;
+            // Version 3 fields; version 1/2 readers stop after the duration.
+            out << " interrupt " << NameOf(kInterruptNames, static_cast<int>(t.interruption)) << " ordered " << t.ordered << "\n";
             for (const AnimCondition& c : t.conditions)
                 out << "  condition " << std::quoted(c.param) << ' ' << kModeNames[static_cast<int>(c.mode)] << ' ' << c.threshold << "\n";
         }
@@ -72,9 +83,22 @@ bool AnimatorController::Save(const std::string& path) const
     return static_cast<bool>(out);
 }
 
-bool AnimatorController::Load(const std::string& path)
+bool AnimatorController::Save(const std::string& path) const
 {
-    std::ifstream file(path);
+    std::ofstream out(path);
+    if (!out) return false;
+    return Save(out);
+}
+
+std::string AnimatorController::ToString() const
+{
+    std::ostringstream out;
+    Save(out);
+    return out.str();
+}
+
+bool AnimatorController::Load(std::istream& file)
+{
     std::string header;
     int version = 0;
     file >> header >> version;
@@ -111,6 +135,7 @@ bool AnimatorController::Load(const std::string& path)
             while (in >> std::quoted(bone))
             {
                 if (bone == "@meshspace") l.meshSpaceRotation = true;
+                else if (bone == "@mask") in >> std::quoted(l.maskAsset);
                 else l.mask.push_back(bone);
             }
             c.layers.push_back(l);
@@ -134,6 +159,18 @@ bool AnimatorController::Load(const std::string& path)
         {
             AnimTransition t;
             in >> std::quoted(t.from) >> std::quoted(t.to) >> t.hasExitTime >> t.exitTime >> t.duration;
+            // Optional version 3 tail: "interrupt <mode> ordered <0|1>".
+            std::string tag;
+            while (in >> tag)
+            {
+                if (tag == "interrupt")
+                {
+                    std::string mode;
+                    in >> mode;
+                    t.interruption = static_cast<AnimInterruption>(IndexOf(kInterruptNames, mode));
+                }
+                else if (tag == "ordered") in >> t.ordered;
+            }
             layer().transitions.push_back(t);
         }
         else if (key == "condition" && !layer().transitions.empty())
@@ -149,8 +186,23 @@ bool AnimatorController::Load(const std::string& path)
         else if (key == "any") in >> layer().anyStatePosition.x >> layer().anyStatePosition.y;
     }
     if (c.layers.empty()) c.layers.emplace_back();
+    // Resolve the blend mask assets now so validation and the first pose use their bones.
+    for (AnimLayer& l : c.layers) l.RefreshMaskAsset();
     *this = std::move(c);
     return true;
+}
+
+bool AnimatorController::Load(const std::string& path)
+{
+    std::ifstream file(path);
+    if (!file) return false;
+    return Load(file);
+}
+
+bool AnimatorController::LoadString(const std::string& text)
+{
+    std::istringstream in(text);
+    return Load(in);
 }
 
 int AnimatorController::FindParam(const std::string& name) const
@@ -160,11 +212,152 @@ int AnimatorController::FindParam(const std::string& name) const
     return -1;
 }
 
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+std::vector<AnimIssue> AnimatorController::Validate(ClipLibrary* clips, const Skeleton* skeleton) const
+{
+    std::vector<AnimIssue> issues;
+    auto add = [&](int layer, int state, int transition, std::string text) {
+        issues.push_back({ layer, state, transition, std::move(text) });
+    };
+    auto paramUsable = [&](const std::string& name) {
+        const int p = FindParam(name);
+        return p >= 0 && (params[p].type == AnimParamType::Float || params[p].type == AnimParamType::Int);
+    };
+
+    for (size_t li = 0; li < layers.size(); ++li)
+    {
+        const AnimLayer& l = layers[li];
+        const int layer = static_cast<int>(li);
+        if (l.states.empty())
+        {
+            add(layer, -1, -1, "Layer '" + l.name + "' has no states.");
+            continue;
+        }
+        if (l.defaultState.empty()) add(layer, -1, -1, "Layer '" + l.name + "' has no default state.");
+        else if (l.FindState(l.defaultState) < 0)
+            add(layer, -1, -1, "Layer '" + l.name + "': default state '" + l.defaultState + "' does not exist.");
+
+        // States
+        for (size_t si = 0; si < l.states.size(); ++si)
+        {
+            const AnimState& s = l.states[si];
+            const int state = static_cast<int>(si);
+            if (si != static_cast<size_t>(l.FindState(s.name)))
+                add(layer, state, -1, "Layer '" + l.name + "': duplicate state name '" + s.name + "'.");
+            if (s.type == AnimMotionType::Clip)
+            {
+                if (s.clip.empty()) add(layer, state, -1, "State '" + s.name + "' has no clip: it plays the rest pose.");
+                else if (clips && !clips->Get(s.clip))
+                    add(layer, state, -1, "State '" + s.name + "': clip '" + s.clip + "' could not be loaded (missing file or take).");
+            }
+            else
+            {
+                const bool twoD = s.type == AnimMotionType::BlendTree2D;
+                if (s.paramX.empty()) add(layer, state, -1, "State '" + s.name + "': blend tree has no parameter.");
+                else if (!paramUsable(s.paramX))
+                    add(layer, state, -1, "State '" + s.name + "': parameter '" + s.paramX + "' is missing or is not a float/int.");
+                if (twoD && !s.paramY.empty() && !paramUsable(s.paramY))
+                    add(layer, state, -1, "State '" + s.name + "': parameter '" + s.paramY + "' is missing or is not a float/int.");
+                if (s.children.empty()) add(layer, state, -1, "State '" + s.name + "': blend tree has no motions.");
+                for (size_t ci = 0; ci < s.children.size(); ++ci)
+                {
+                    const BlendChild& ch = s.children[ci];
+                    if (ch.clip.empty()) add(layer, state, -1, "State '" + s.name + "': motion " + std::to_string(ci + 1) + " has no clip.");
+                    else if (clips && !clips->Get(ch.clip))
+                        add(layer, state, -1, "State '" + s.name + "': clip '" + ch.clip + "' could not be loaded (missing file or take).");
+                    if (!twoD)
+                        for (size_t cj = 0; cj < ci; ++cj)
+                            if (s.children[cj].threshold == ch.threshold)
+                                add(layer, state, -1, "State '" + s.name + "': two motions share threshold " +
+                                                          std::to_string(ch.threshold) + " (1D blend is ambiguous).");
+                }
+            }
+        }
+
+        // Transitions
+        for (size_t ti = 0; ti < l.transitions.size(); ++ti)
+        {
+            const AnimTransition& t = l.transitions[ti];
+            const int transition = static_cast<int>(ti);
+            const bool fromAny = t.from == AnimLayer::kAnyState;
+            if (!fromAny && l.FindState(t.from) < 0)
+                add(layer, -1, transition, "Transition from missing state '" + t.from + "'.");
+            if (l.FindState(t.to) < 0) add(layer, -1, transition, "Transition to missing state '" + t.to + "'.");
+            if (!t.hasExitTime && t.conditions.empty())
+                add(layer, -1, transition, "Transition " + t.from + " -> " + t.to + " has no exit time and no conditions (it never fires).");
+            for (const AnimCondition& c : t.conditions)
+                if (FindParam(c.param) < 0)
+                    add(layer, -1, transition, "Transition " + t.from + " -> " + t.to + " uses unknown parameter '" + c.param + "'.");
+        }
+
+        // Reachability: everything the default state can walk to.
+        std::vector<uint8_t> reachable(l.states.size(), 0);
+        std::vector<int> stack;
+        if (const int d = l.FindState(l.defaultState); d >= 0) { reachable[d] = 1; stack.push_back(d); }
+        while (!stack.empty())
+        {
+            const std::string name = l.states[stack.back()].name;
+            stack.pop_back();
+            for (const AnimTransition& t : l.transitions)
+            {
+                const bool fromAny = t.from == AnimLayer::kAnyState;
+                if (!fromAny && t.from != name) continue;
+                const int to = l.FindState(t.to);
+                if (to >= 0 && !reachable[to]) { reachable[to] = 1; stack.push_back(to); }
+            }
+        }
+        for (size_t si = 0; si < l.states.size(); ++si)
+            if (!reachable[si])
+                add(layer, static_cast<int>(si), -1, "State '" + l.states[si].name + "' is unreachable from the default state.");
+
+        // Layer settings
+        if (!l.maskAsset.empty() && l.maskAssetMissing)
+            add(layer, -1, -1, "Layer '" + l.name + "': blend mask '" + l.maskAsset + "' could not be loaded.");
+        for (const std::string& bone : l.EffectiveMask())
+            if (skeleton && skeleton->Find(bone) < 0)
+                add(layer, -1, -1, "Layer '" + l.name + "': mask bone '" + bone + "' is not in the rig.");
+    }
+    return issues;
+}
+
 int AnimLayer::FindState(const std::string& n) const
 {
     for (size_t i = 0; i < states.size(); ++i)
         if (states[i].name == n) return static_cast<int>(i);
     return -1;
+}
+
+// No mask at all means the whole body (the inline list has always worked that way). An assigned mask
+// asset means "only these bones": an empty or unreadable one therefore drives nothing, so a deleted
+// .mask file cannot silently turn an upper-body layer into a full-body one.
+bool AnimLayer::DrivesWholeBody() const
+{
+    if (!maskAsset.empty()) return false;
+    return mask.empty();
+}
+
+// (Re)reads the .mask file behind maskAsset when it is new or changed on disk; true when the
+// resolved bones changed (the AnimationSystem then bumps the controller version).
+bool AnimLayer::RefreshMaskAsset()
+{
+    const std::vector<std::string> oldBones = std::move(maskAssetBones);
+    const bool oldMissing = maskAssetMissing;
+    const auto oldStamp = maskAssetStamp;
+    maskAssetBones.clear();
+    maskAssetMissing = false;
+    maskAssetStamp = {};
+    if (maskAsset.empty())
+        return !oldBones.empty() || oldMissing;
+
+    BlendMask mask;
+    maskAssetMissing = !mask.Load(maskAsset);
+    if (!maskAssetMissing) maskAssetBones = std::move(mask.bones);
+    std::error_code ec;
+    maskAssetStamp = std::filesystem::last_write_time(maskAsset, ec);
+    if (ec) maskAssetStamp = {};
+    return maskAssetBones != oldBones || maskAssetMissing != oldMissing || maskAssetStamp != oldStamp;
 }
 
 std::string AnimLayer::UniqueStateName(const std::string& base) const
@@ -237,6 +430,22 @@ bool AnimatorInstance::SetParam(const std::string& name, float value)
     return true;
 }
 
+bool AnimatorInstance::SetParamDamped(const std::string& name, float target, float dampTime, float dt)
+{
+    if (!m_Controller) return false;
+    const int i = m_Controller->FindParam(name);
+    if (i < 0 || i >= static_cast<int>(m_Values.size())) return false;
+    if (dampTime <= 0.0f || dt <= 0.0f) return SetParam(name, target);
+    const AnimParamType type = m_Controller->params[i].type;
+    if (type == AnimParamType::Bool || type == AnimParamType::Trigger) return SetParam(name, target);
+    // Half of Unity's damp time curve: one exponential step per call, no stored target.
+    const float t = 1.0f - std::exp(-dt / dampTime);
+    float value = m_Values[i] + (target - m_Values[i]) * t;
+    if (type == AnimParamType::Int) value = std::round(value);
+    m_Values[i] = value;
+    return true;
+}
+
 void AnimatorInstance::Weights(const AnimState& state, ClipLibrary& clips, std::vector<WeightedClip>& out) const
 {
     out.clear();
@@ -298,6 +507,9 @@ float AnimatorInstance::StateLength(const AnimState& state, ClipLibrary& clips) 
     Weights(state, clips, w);
     float length = 0.0f;
     for (const WeightedClip& c : w) length += c.weight * c.clip->duration / std::max(c.speed, 1e-3f);
+    // A state whose clips are missing still advances, at one second per normalized unit: without this
+    // its length would collapse to a millisecond and its normalized time (and exit times) would race.
+    if (length <= 0.0f) return 1.0f;
     return std::max(length, 1e-3f);
 }
 
@@ -383,14 +595,109 @@ const std::vector<uint8_t>& AnimatorInstance::Mask(int index, const Skeleton& sk
     LayerState& l = m_Layers[index];
     if (l.maskSkeleton == &skeleton && l.mask.size() == skeleton.names.size()) return l.mask;
     const AnimLayer& layer = m_Controller->layers[index];
-    l.mask.assign(skeleton.names.size(), layer.mask.empty() ? 1 : 0);
+    l.mask.assign(skeleton.names.size(), layer.DrivesWholeBody() ? 1 : 0);
     // A bone is in the mask when it or one of its ancestors is listed (parents precede children).
-    for (const std::string& bone : layer.mask)
+    for (const std::string& bone : layer.EffectiveMask())
         if (const int b = skeleton.Find(bone); b >= 0) l.mask[b] = 1;
     for (size_t i = 0; i < skeleton.names.size(); ++i)
         if (skeleton.parents[i] >= 0 && l.mask[skeleton.parents[i]]) l.mask[i] = 1;
     l.maskSkeleton = &skeleton;
     return l.mask;
+}
+
+// Has the normalized time of `state` reached `exitTime` this frame? Looping states fire every lap,
+// non-looping ones once the time grows past it (a state that does not advance cannot cross).
+bool AnimatorInstance::ExitCrossed(const AnimState& state, float prev, float after, float exitTime)
+{
+    if (state.loop && exitTime < 1.0f)
+    {
+        const float a = prev - std::floor(prev), b = a + (after - prev);
+        return (a < exitTime && b >= exitTime) || (b >= 1.0f + exitTime);
+    }
+    return after >= exitTime && after > prev;
+}
+
+int AnimatorInstance::FindTransition(const AnimLayer& layer, LayerState& ls, float curAfter, float nextAfter)
+{
+    const std::vector<AnimState>& states = layer.states;
+    const bool running = ls.next >= 0 && ls.transition >= 0 && ls.transition < static_cast<int>(layer.transitions.size());
+    const AnimInterruption mode = running ? layer.transitions[ls.transition].interruption : AnimInterruption::None;
+    if (running && mode == AnimInterruption::None) return -1; // a transition always finishes
+    const bool ordered = running && layer.transitions[ls.transition].ordered;
+    const bool fromCurrent = !running || mode == AnimInterruption::Current || mode == AnimInterruption::CurrentThenNext ||
+                             mode == AnimInterruption::NextThenCurrent;
+    const bool fromNext = !running || mode == AnimInterruption::Next || mode == AnimInterruption::CurrentThenNext ||
+                          mode == AnimInterruption::NextThenCurrent;
+    const std::string currentName = states[ls.current].name;
+    const std::string nextName = ls.next >= 0 ? states[ls.next].name : std::string();
+
+    // Is transition i ready this frame? Exit times are measured on the state the transition leaves.
+    auto ready = [&](int i, int& target) -> bool {
+        const AnimTransition& t = layer.transitions[i];
+        if (running && i == ls.transition) return false; // don't restart the running transition
+        const bool fromAny = t.from == AnimLayer::kAnyState;
+        target = layer.FindState(t.to);
+        if (target < 0) return false;
+        if (fromAny && (target == ls.current || target == ls.next)) return false;
+        int source = ls.current;
+        if (!fromAny)
+        {
+            if (t.from == currentName)
+            {
+                if (!fromCurrent) return false;
+            }
+            else if (ls.next >= 0 && t.from == nextName && fromNext) source = ls.next;
+            else return false;
+        }
+        const float prev = source == ls.current ? ls.time : ls.nextTime;
+        const float after = source == ls.current ? curAfter : nextAfter;
+        if (t.hasExitTime && !ExitCrossed(states[source], prev, after, t.exitTime)) return false;
+        if (!t.hasExitTime && t.conditions.empty()) return false; // would fire every frame
+        return ConditionsMet(t);
+    };
+
+    // Candidates are grouped: Any State first, then the states the source setting allows. With
+    // "ordered interruption" the layer's own list order decides instead.
+    std::vector<std::vector<int>> groups;
+    const auto collect = [&](const std::string& name, bool any) {
+        std::vector<int> g;
+        for (int i = 0; i < static_cast<int>(layer.transitions.size()); ++i)
+            if ((layer.transitions[i].from == AnimLayer::kAnyState) == any && (any || layer.transitions[i].from == name)) g.push_back(i);
+        if (!g.empty()) groups.push_back(std::move(g));
+    };
+    if (ordered && running)
+    {
+        std::vector<int> g;
+        for (int i = 0; i < static_cast<int>(layer.transitions.size()); ++i)
+        {
+            const AnimTransition& t = layer.transitions[i];
+            const bool eligible = t.from == AnimLayer::kAnyState || (fromCurrent && t.from == currentName) ||
+                                  (fromNext && ls.next >= 0 && t.from == nextName);
+            if (eligible) g.push_back(i);
+        }
+        if (!g.empty()) groups.push_back(std::move(g));
+    }
+    else
+    {
+        collect({}, true); // Any State
+        if (mode == AnimInterruption::NextThenCurrent)
+        {
+            if (ls.next >= 0) collect(nextName, false);
+            collect(currentName, false);
+        }
+        else
+        {
+            collect(currentName, false);
+            if (mode != AnimInterruption::None && ls.next >= 0) collect(nextName, false);
+        }
+    }
+    for (const std::vector<int>& g : groups)
+        for (const int i : g)
+        {
+            int target = -1;
+            if (ready(i, target)) return i;
+        }
+    return -1;
 }
 
 void AnimatorInstance::UpdateLayer(int index, float dt, ClipLibrary& clips, const Skeleton& skeleton, bool extract, Pose& pose, RootMotion& motion)
@@ -404,76 +711,150 @@ void AnimatorInstance::UpdateLayer(int index, float dt, ClipLibrary& clips, cons
         pose = skeleton.rest;
         return;
     }
+    const auto advance = [&](int s, float time) { return time + dt * states[s].speed / StateLength(states[s], clips); };
 
-    // Transitions (not interruptible while one is running, Unity's default).
-    if (ls.next < 0)
+    // End-of-frame times before a transition starts; exit times are checked against them.
+    const float curAfter = advance(ls.current, ls.time);
+    const float nextAfter = ls.next >= 0 ? advance(ls.next, ls.nextTime) : ls.nextTime;
+
+    // ---- Pick a transition (a running one may be interrupted) -----------------
+    const int chosen = FindTransition(layer, ls, curAfter, nextAfter);
+    if (chosen >= 0)
     {
-        const std::string& currentName = states[ls.current].name;
-        const float length = StateLength(states[ls.current], clips);
-        const float prevTime = ls.time;
-        const float nextTime = ls.time + dt * states[ls.current].speed / length;
-        for (int pass = 0; pass < 2 && ls.next < 0; ++pass)
+        const AnimTransition& t = layer.transitions[chosen];
+        const int target = layer.FindState(t.to);
+        if (ls.next >= 0)
         {
-            for (const AnimTransition& t : layer.transitions)
+            // Freeze the interrupted blend at its current weights: it keeps playing as the new "from"
+            // side (no pose pop) and its states keep driving the root motion underneath.
+            const float wOld = ls.duration > 0.0f ? std::clamp(ls.elapsed / ls.duration, 0.0f, 1.0f) : 1.0f;
+            std::vector<MotionSource> kept;
+            const auto push = [&](int state, float time, float base) {
+                if (base > 1e-5f && state >= 0) kept.push_back({ state, time, base });
+            };
+            if (ls.frozen)
+                for (const MotionSource& s : ls.sources) push(s.state, s.time, s.base * (1.0f - wOld));
+            else
+                push(ls.current, ls.time, 1.0f - wOld);
+            push(ls.next, ls.nextTime, wOld);
+            if (kept.empty()) push(ls.current, ls.time, 1.0f);
+            // Long interruption chains merge the lightest sources so evaluation stays bounded.
+            while (kept.size() > 4)
             {
-                const bool fromAny = t.from == AnimLayer::kAnyState;
-                if (pass == 0 ? !fromAny : t.from != currentName) continue;
-                const int target = layer.FindState(t.to);
-                if (target < 0 || (fromAny && target == ls.current)) continue;
-                if (t.hasExitTime)
-                {
-                    // Fires when the normalized time crosses the exit time (every loop for looping states).
-                    bool crossed;
-                    if (states[ls.current].loop && t.exitTime < 1.0f)
-                    {
-                        const float a = prevTime - std::floor(prevTime), b = a + (nextTime - prevTime);
-                        crossed = (a < t.exitTime && b >= t.exitTime) || (b >= 1.0f + t.exitTime);
-                    }
-                    else crossed = nextTime >= t.exitTime;
-                    if (!crossed) continue;
-                }
-                if (!t.hasExitTime && t.conditions.empty()) continue; // would fire every frame
-                if (!ConditionsMet(t)) continue;
-                ConsumeTriggers(t);
-                ls.next = target;
-                ls.nextTime = 0.0f;
-                ls.elapsed = 0.0f;
-                ls.duration = std::max(t.duration, 0.0f);
-                break;
+                size_t light = 0;
+                for (size_t i = 1; i < kept.size(); ++i)
+                    if (kept[i].base < kept[light].base) light = i;
+                const float dropped = kept[light].base;
+                kept.erase(kept.begin() + static_cast<long>(light));
+                const float rest = std::max(1.0f - dropped, 1e-6f);
+                for (MotionSource& s : kept) s.base /= rest;
+            }
+            float sum = 0.0f;
+            for (const MotionSource& s : kept) sum += s.base;
+            for (MotionSource& s : kept) s.base /= std::max(sum, 1e-6f);
+            ls.sources = std::move(kept);
+            ls.frozen = true;
+            // The logical source of the new transition is the state it leaves.
+            if (t.from != AnimLayer::kAnyState && t.from == states[ls.next].name)
+            {
+                ls.current = ls.next;
+                ls.time = ls.nextTime;
+            }
+        }
+        else
+        {
+            ls.frozen = false;
+            ls.sources.clear();
+        }
+        ConsumeTriggers(t);
+        ls.next = target;
+        ls.nextTime = 0.0f;
+        ls.elapsed = 0.0f;
+        ls.duration = std::max(t.duration, 0.0f);
+        ls.transition = chosen;
+    }
+
+    // ---- Advance -------------------------------------------------------------
+    const int fromState = ls.current;
+    const float fromTime = ls.time;
+    ls.time = advance(fromState, ls.time);
+    float nextTimeFrom = ls.nextTime;
+    if (ls.next >= 0)
+    {
+        ls.nextTime = advance(ls.next, ls.nextTime);
+        ls.elapsed += dt;
+    }
+    std::vector<glm::vec2> spans; // (from, to) of every frozen source this frame (root motion only)
+    if (ls.frozen)
+    {
+        if (extract) spans.reserve(ls.sources.size());
+        for (MotionSource& s : ls.sources)
+        {
+            const float from = s.time;
+            s.time = advance(s.state, s.time);
+            if (extract) spans.push_back({ from, s.time });
+        }
+    }
+
+    // ---- Pose ----------------------------------------------------------------
+    const float w = ls.next >= 0 ? (ls.duration > 0.0f ? std::clamp(ls.elapsed / ls.duration, 0.0f, 1.0f) : 1.0f) : 0.0f;
+    if (ls.frozen)
+    {
+        // Progressive blend of the frozen sources (weights add up to 1).
+        float accumulated = 0.0f;
+        for (size_t i = 0; i < ls.sources.size(); ++i)
+        {
+            EvaluateState(states[ls.sources[i].state], ls.sources[i].time, clips, skeleton, extract, m_PoseC);
+            if (i == 0)
+                pose = m_PoseC;
+            else
+            {
+                accumulated += ls.sources[i - 1].base;
+                const float t = ls.sources[i].base / std::max(accumulated + ls.sources[i].base, 1e-6f);
+                for (size_t b = 0; b < pose.size() && b < m_PoseC.size(); ++b) pose[b] = Blend(pose[b], m_PoseC[b], t);
             }
         }
     }
-
-    // Advance current (and next) state.
-    const AnimState& current = states[ls.current];
-    const float fromA = ls.time;
-    ls.time += dt * current.speed / StateLength(current, clips);
-    EvaluateState(current, ls.time, clips, skeleton, extract, pose);
-    RootMotion ma = extract ? StateMotion(current, fromA, ls.time, clips) : RootMotion{};
-
+    else
+        EvaluateState(states[ls.current], ls.time, clips, skeleton, extract, pose);
     if (ls.next >= 0)
     {
-        const AnimState& next = states[ls.next];
-        const float fromB = ls.nextTime;
-        ls.nextTime += dt * next.speed / StateLength(next, clips);
-        ls.elapsed += dt;
-        const float w = ls.duration > 0.0f ? std::clamp(ls.elapsed / ls.duration, 0.0f, 1.0f) : 1.0f;
-        EvaluateState(next, ls.nextTime, clips, skeleton, extract, m_PoseB);
-        for (size_t i = 0; i < pose.size() && i < m_PoseB.size(); ++i) pose[i] = Blend(pose[i], m_PoseB[i], w);
-        if (extract)
+        EvaluateState(states[ls.next], ls.nextTime, clips, skeleton, extract, m_PoseB);
+        for (size_t b = 0; b < pose.size() && b < m_PoseB.size(); ++b) pose[b] = Blend(pose[b], m_PoseB[b], w);
+    }
+
+    // ---- Root motion ---------------------------------------------------------
+    if (extract)
+    {
+        if (ls.frozen)
         {
-            const RootMotion mb = StateMotion(next, fromB, ls.nextTime, clips);
-            ma.position = ma.position * (1.0f - w) + mb.position * w;
-            ma.yaw = ma.yaw * (1.0f - w) + mb.yaw * w;
+            for (size_t i = 0; i < ls.sources.size(); ++i)
+            {
+                const RootMotion m = StateMotion(states[ls.sources[i].state], spans[i].x, spans[i].y, clips);
+                motion.position += m.position * ls.sources[i].base;
+                motion.yaw += m.yaw * ls.sources[i].base;
+            }
         }
-        if (w >= 1.0f)
+        else
+            motion = StateMotion(states[fromState], fromTime, ls.time, clips);
+        if (ls.next >= 0)
         {
-            ls.current = ls.next;
-            ls.time = ls.nextTime;
-            ls.next = -1;
+            const RootMotion mb = StateMotion(states[ls.next], nextTimeFrom, ls.nextTime, clips);
+            motion.position = motion.position * (1.0f - w) + mb.position * w;
+            motion.yaw = motion.yaw * (1.0f - w) + mb.yaw * w;
         }
     }
-    motion = ma;
+
+    // ---- Finish the transition ----------------------------------------------
+    if (ls.next >= 0 && w >= 1.0f)
+    {
+        ls.current = ls.next;
+        ls.time = ls.nextTime;
+        ls.next = -1;
+        ls.transition = -1;
+        ls.frozen = false;
+        ls.sources.clear();
+    }
 }
 
 void AnimatorInstance::Update(float dt, ClipLibrary& clips, const Skeleton& skeleton, bool extractRootMotion, Pose& pose, RootMotion& motion)

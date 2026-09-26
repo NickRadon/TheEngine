@@ -20,6 +20,14 @@ using EditorUI::Icon;
 
 namespace
 {
+    bool IsEngineRig(const std::string& path)
+    {
+        if (fs::path(path).extension() != ".rig") return false;
+        std::ifstream in(path);
+        std::string magic;
+        int version = 0;
+        return (in >> magic >> version) && magic == "TheEngineRig" && (version == 1 || version == 2);
+    }
     std::string Ext(const std::string& path)
     {
         std::string e = fs::path(path).extension().string();
@@ -263,6 +271,16 @@ std::string Editor::CreateAsset(const std::string& folder, const std::string& ki
         path = UniquePath(fs::path(folder) / "New Animator Controller.controller");
         AnimatorController().Save(path);
     }
+    else if (kind == "mask")
+    {
+        path = UniquePath(fs::path(folder) / "New Blend Mask.mask");
+        BlendMask().Save(path);
+    }
+    else if (kind == "rig")
+    {
+        path = UniquePath(fs::path(folder) / "New Rig.rig");
+        std::ofstream(path) << "TheEngineRig 2\n# Add helper bones first, then ordered controls.\n";
+    }
     else if (kind == "scene")
     {
         path = UniquePath(fs::path(folder) / "New Scene.scene");
@@ -300,6 +318,16 @@ void Editor::ProjectContextMenu(const std::string& folder)
         if (ImGui::MenuItem("Material")) CreateAsset(folder, "material");
         if (ImGui::MenuItem("Scene")) CreateAsset(folder, "scene");
         if (ImGui::MenuItem("Animator Controller")) CreateAsset(folder, "controller");
+        if (ImGui::MenuItem("Blend Mask"))
+        {
+            const std::string path = CreateAsset(folder, "mask");
+            if (!path.empty()) OpenBlendMask(path);
+        }
+        if (ImGui::MenuItem("Rig Controls"))
+        {
+            const std::string path = CreateAsset(folder, "rig");
+            if (!path.empty()) OpenRig(path);
+        }
         ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Import New Asset..."))
@@ -524,6 +552,7 @@ void Editor::DrawProject()
                                 }
                             }
                             if (m_SelectedAsset == it.path) m_SelectedAsset = dst.generic_string();
+                            if (m_MaskPath == it.path) m_MaskPath = dst.generic_string();
                         }
                     }
                 }
@@ -554,6 +583,8 @@ void Editor::DrawProject()
             else if (ResourceCache::IsModelFile(it.path)) InstantiateModel(it.path, kNullEntity, nullptr);
             else if (Prefab::IsPrefabFile(it.path)) OpenPrefabMode(it.path);
             else if (AnimatorController::IsControllerFile(it.path)) OpenAnimatorController(it.path);
+            else if (BlendMask::IsMaskFile(it.path)) OpenBlendMask(it.path);
+            else if (IsEngineRig(it.path)) OpenRig(it.path);
         }
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) m_SelectedAsset = it.path;
         if (ImGui::BeginPopupContextItem("AssetContext"))
@@ -562,6 +593,8 @@ void Editor::DrawProject()
             {
                 if (it.dir) openFolder = it.path;
                 else if (IsScene(it.path)) OpenScene(it.path);
+                else if (BlendMask::IsMaskFile(it.path)) OpenBlendMask(it.path);
+                else if (IsEngineRig(it.path)) OpenRig(it.path);
                 else Platform::OpenWithDefaultApp(it.path);
             }
             if (ImGui::MenuItem("Rename", "F2"))
@@ -662,6 +695,7 @@ void Editor::DrawProject()
             {
                 LOG_INFO("Moved %s to the Recycle Bin", m_DeleteAsset.c_str());
                 if (m_SelectedAsset == m_DeleteAsset) m_SelectedAsset.clear();
+                if (m_MaskPath == m_DeleteAsset) m_MaskPath.clear();
             }
             else
             {
@@ -1024,6 +1058,22 @@ void Editor::DrawAssetInspector()
             if (ImGui::Button("Open in Animator", ImVec2(-FLT_MIN, 0))) OpenAnimatorController(path);
             ImGui::TextDisabled("Drag onto an Animator component's Controller field.");
         }
+    }
+    else if (BlendMask::IsMaskFile(path))
+    {
+        BlendMask mask;
+        if (mask.Load(path))
+        {
+            ImGui::Text("Bones: %d", static_cast<int>(mask.bones.size()));
+            if (ImGui::Button("Open Blend Mask", ImVec2(-FLT_MIN, 0))) OpenBlendMask(path);
+            ImGui::TextDisabled("Assign this asset to an Animator Controller layer.");
+        }
+    }
+    else if (IsEngineRig(path))
+    {
+        ImGui::TextUnformatted("Ordered helper bones and rig controls");
+        if (ImGui::Button("Open Rig Controls", ImVec2(-FLT_MIN, 0))) OpenRig(path);
+        ImGui::TextDisabled("Assign this .rig to an Animator component.");
     }
     else if (Prefab::IsPrefabFile(path))
     {

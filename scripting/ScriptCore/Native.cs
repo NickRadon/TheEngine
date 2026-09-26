@@ -42,6 +42,12 @@ namespace TheEngine.Internal
         public delegate* unmanaged<ulong, char*, int, int, float, float> AnimatorLayer;
         public delegate* unmanaged<ulong, float, float, void> AnimatorLook;
         public delegate* unmanaged<ulong, float*, void> AnimatorDelta;
+        public delegate* unmanaged<ulong, char*, float, float, float, int> AnimatorParamDamped;
+        public delegate* unmanaged<ulong, int, float*, int> AnimatorStateInfo;
+        public delegate* unmanaged<ulong, int, int, char*, int, int> AnimatorStateNameAt;
+        public delegate* unmanaged<ulong, int, char*, int, int> AnimatorLayerName;
+        public delegate* unmanaged<ulong, int, char*, int, float*, int> AnimatorParamInfo;
+        public delegate* unmanaged<ulong, char*, int, int, float*, int> AnimatorStreamBone;
     }
 
     internal static unsafe class Native
@@ -76,6 +82,7 @@ namespace TheEngine.Internal
         ColliderEnabled = 8,     // float[1]
         AnimatorApplyRootMotion = 9, // float[1]
         AnimatorEnabled = 10,    // float[1]
+        AnimatorActive = 11,     // float[1] - runtime enable (the header checkbox in the Inspector)
     }
 
     internal enum EngineComponent { MeshRenderer = 0, Light = 1, Camera = 2, Rigidbody = 3, Collider = 4, Animator = 5, CharacterController = 6 }

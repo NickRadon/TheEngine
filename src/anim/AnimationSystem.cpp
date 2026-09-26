@@ -1,4 +1,5 @@
 #include "anim/AnimationSystem.h"
+#include "anim/AnimationGraph.h"
 
 #include "core/Log.h"
 #include "render/Resources.h"
@@ -24,7 +25,7 @@ namespace
         std::ifstream in(path);
         std::string magic;
         int version = 0;
-        if (!(in >> magic >> version) || magic != "TheEngineRig" || version != 1)
+        if (!(in >> magic >> version) || magic != "TheEngineRig" || (version != 1 && version != 2))
         {
             LOG_ERROR("Could not load rig setup %s", path.c_str());
             return nullptr;
@@ -38,10 +39,13 @@ namespace
             std::istringstream row(line);
             std::string kind, name, parentName;
             if (!(row >> kind) || kind[0] == '#') continue;
-            if (kind == "copy" || kind == "move" || kind == "rotate" || kind == "addlocalrot")
+            const bool beforeLook = kind == "precopy";
+            if (kind == "copy" || beforeLook || kind == "move" || kind == "rotate" || kind == "addlocalrot" ||
+                (version >= 2 && (kind == "modify" || kind == "twobone")))
             {
                 if (!(row >> std::quoted(name) >> std::quoted(parentName))) return nullptr;
                 RigOperation op;
+                op.beforeLook = beforeLook;
                 op.target = rig->Find(name);
                 op.source = rig->Find(parentName);
                 if (op.target < 0 || op.source < 0)
@@ -49,19 +53,42 @@ namespace
                     LOG_ERROR("Rig operation has unknown bone %s or %s", name.c_str(), parentName.c_str());
                     return nullptr;
                 }
-                if (kind == "copy") op.type = RigOperation::Type::Copy;
+                if (kind == "copy" || beforeLook)
+                {
+                    op.type = RigOperation::Type::Copy;
+                    if (version >= 2)
+                    {
+                        int translation = 1, rotation = 1, scale = 1;
+                        if (!(row >> op.weight >> translation >> rotation >> scale)) return nullptr;
+                        op.copyTranslation = translation != 0;
+                        op.copyRotation = rotation != 0;
+                        op.copyScale = scale != 0;
+                    }
+                }
                 else if (kind == "addlocalrot") op.type = RigOperation::Type::AddLocalRotation;
                 else if (kind == "move")
                 {
                     op.type = RigOperation::Type::Move;
                     if (!(row >> op.position.x >> op.position.y >> op.position.z)) return nullptr;
                 }
+                else if (kind == "twobone")
+                {
+                    op.type = RigOperation::Type::TwoBoneIk;
+                    std::string hintName;
+                    if (!(row >> std::quoted(hintName) >> op.weight)) return nullptr;
+                    op.hint = hintName.empty() ? -1 : rig->Find(hintName);
+                    if (!hintName.empty() && op.hint < 0) return nullptr;
+                    const int middle = rig->parents[op.target];
+                    if (middle < 0 || rig->parents[middle] < 0) return nullptr;
+                }
                 else
                 {
-                    op.type = RigOperation::Type::Rotate;
+                    op.type = kind == "modify" ? RigOperation::Type::Modify : RigOperation::Type::Rotate;
                     float x, y, z, w;
+                    if (kind == "modify" && !(row >> op.position.x >> op.position.y >> op.position.z)) return nullptr;
                     if (!(row >> x >> y >> z >> w)) return nullptr;
                     op.rotation = glm::normalize(glm::quat(w, x, y, z));
+                    if (kind == "modify" && !(row >> op.weight)) return nullptr;
                 }
                 operations.push_back(op);
                 continue;
@@ -105,6 +132,12 @@ void AnimationSystem::Reset()
     m_Animators.clear();
 }
 
+void AnimationSystem::LogIssues(const std::string& path, const AnimatorController& controller)
+{
+    const std::string name = fs::path(path).filename().string();
+    for (const AnimIssue& issue : controller.Validate(&m_Clips, nullptr)) LOG_WARN("Animator Controller %s: %s", name.c_str(), issue.text.c_str());
+}
+
 AnimatorController* AnimationSystem::Controller(const std::string& path)
 {
     if (path.empty()) return nullptr;
@@ -119,6 +152,8 @@ AnimatorController* AnimationSystem::Controller(const std::string& path)
         LOG_WARN("Could not load animator controller %s", path.c_str());
         entry.controller.reset();
     }
+    else
+        LogIssues(path, *entry.controller);
     return (m_Controllers[path] = std::move(entry)).controller.get();
 }
 
@@ -129,6 +164,19 @@ void AnimationSystem::ControllerEdited(const std::string& path)
     std::error_code ec;
     it->second.stamp = fs::last_write_time(path, ec);
     it->second.version++;
+}
+
+void AnimationSystem::MaskEdited(const std::string& maskPath)
+{
+    if (maskPath.empty()) return;
+    for (auto& [path, entry] : m_Controllers)
+    {
+        if (!entry.controller) continue;
+        bool changed = false;
+        for (AnimLayer& l : entry.controller->layers)
+            if (l.maskAsset == maskPath && l.RefreshMaskAsset()) changed = true;
+        if (changed) entry.version++; // instances rebuild their per layer mask on a version change
+    }
 }
 
 AnimatorInstance* AnimationSystem::Instance(EntityId animatorEntity)
@@ -241,40 +289,108 @@ void AnimationSystem::UpdateSockets(Scene& scene, const Entity& animator, const 
     }
 }
 
-void AnimationSystem::ApplyRigOperations(Runtime& rt, const Skeleton& skeleton)
+void AnimationSystem::ApplyRigOperations(Runtime& rt, const Skeleton& skeleton, bool beforeLook)
 {
+    RootMotion unusedMotion;
+    AnimationStream stream(skeleton, rt.pose, unusedMotion);
+    const auto rotOf = [](const glm::mat4& matrix) { return glm::normalize(glm::quat_cast(glm::mat3(matrix))); };
     for (const RigOperation& op : rt.rigOperations)
     {
-        if (op.target < 0 || op.source < 0 || op.target >= static_cast<int>(rt.model.size()) ||
-            op.source >= static_cast<int>(rt.model.size())) continue;
-        if (op.type == RigOperation::Type::AddLocalRotation)
+        if (op.beforeLook != beforeLook) continue;
+        const BoneHandle target{ &skeleton, op.target }, source{ &skeleton, op.source };
+        if (!stream.Valid(target) || !stream.Valid(source)) continue;
+        const float weight = glm::clamp(op.weight, 0.0f, 1.0f);
+        if (weight <= 0.0f) continue;
+        if (op.type == RigOperation::Type::TwoBoneIk)
         {
-            rt.pose[op.target].r = glm::normalize(rt.pose[op.target].r * rt.pose[op.source].r);
-            PoseToModel(skeleton, rt.pose, rt.model);
+            const int tip = op.target, middle = skeleton.parents[tip];
+            const int upper = middle >= 0 ? skeleton.parents[middle] : -1;
+            if (upper < 0 || upper == op.source || middle == op.source) continue;
+            const glm::mat4 upperWorld = stream.Model({ &skeleton, upper });
+            const glm::mat4 middleWorld = stream.Model({ &skeleton, middle });
+            const glm::mat4 tipWorld = stream.Model(target);
+            const glm::mat4 goalWorld = stream.Model(source);
+            const glm::vec3 a(upperWorld[3]), b(middleWorld[3]), c(tipWorld[3]), goal(goalWorld[3]);
+            const float l1 = glm::length(b - a), l2 = glm::length(c - b);
+            const glm::vec3 delta = goal - a;
+            const float distance = glm::length(delta);
+            if (l1 < 1e-5f || l2 < 1e-5f || distance < 1e-5f) continue;
+            const glm::vec3 direction = delta / distance;
+            const float reach = glm::clamp(distance, std::abs(l1 - l2) + 1e-4f, l1 + l2 - 1e-4f);
+            const float along = (l1 * l1 - l2 * l2 + reach * reach) / (2.0f * reach);
+            const float height = std::sqrt(std::max(l1 * l1 - along * along, 0.0f));
+            glm::vec3 bend;
+            if (op.hint >= 0 && stream.Valid({ &skeleton, op.hint }))
+            {
+                const glm::vec3 pole(stream.Model({ &skeleton, op.hint })[3]);
+                bend = pole - a - direction * glm::dot(pole - a, direction);
+            }
+            else bend = (b - a) - direction * glm::dot(b - a, direction);
+            if (glm::dot(bend, bend) < 1e-10f)
+            {
+                const glm::vec3 axis = std::abs(direction.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+                bend = glm::cross(direction, axis);
+            }
+            bend = glm::normalize(bend);
+            const glm::vec3 elbow = a + direction * along + bend * height;
+            const glm::vec3 end = a + direction * reach;
+            const glm::quat d1 = glm::rotation(glm::normalize(b - a), glm::normalize(elbow - a));
+            const glm::quat newUpper = glm::normalize(d1 * rotOf(upperWorld));
+            const glm::quat d2 = glm::rotation(glm::normalize(d1 * (c - b)), glm::normalize(end - elbow));
+            const glm::quat newMiddle = glm::normalize(d2 * d1 * rotOf(middleWorld));
+            const int upperParent = skeleton.parents[upper];
+            const glm::quat parentRotation = upperParent >= 0 ? rotOf(stream.Model({ &skeleton, upperParent })) : glm::quat(1, 0, 0, 0);
+            BoneTransform upperLocal = stream.Local({ &skeleton, upper });
+            BoneTransform middleLocal = stream.Local({ &skeleton, middle });
+            BoneTransform tipLocal = stream.Local(target);
+            upperLocal.r = glm::slerp(upperLocal.r, glm::normalize(glm::inverse(parentRotation) * newUpper), weight);
+            middleLocal.r = glm::slerp(middleLocal.r, glm::normalize(glm::inverse(newUpper) * newMiddle), weight);
+            tipLocal.r = glm::slerp(tipLocal.r, glm::normalize(glm::inverse(newMiddle) * rotOf(goalWorld)), weight);
+            stream.SetLocal({ &skeleton, upper }, upperLocal);
+            stream.SetLocal({ &skeleton, middle }, middleLocal);
+            stream.SetLocal(target, tipLocal);
             continue;
         }
-        glm::mat4 world = rt.model[op.target];
-        if (op.type == RigOperation::Type::Copy) world = rt.model[op.source];
-        else if (op.type == RigOperation::Type::Move)
+        if (op.type == RigOperation::Type::AddLocalRotation)
         {
-            const glm::quat space = glm::normalize(glm::quat_cast(glm::mat3(rt.model[op.source])));
-            world[3] += glm::vec4(space * op.position, 0.0f);
+            BoneTransform local = stream.Local(target);
+            local.r = glm::slerp(local.r, glm::normalize(local.r * stream.Local(source).r), weight);
+            stream.SetLocal(target, local);
+            continue;
         }
-        else
+        glm::mat4 world = stream.Model(target);
+        if (op.type == RigOperation::Type::Copy)
         {
-            const glm::quat space = glm::normalize(glm::quat_cast(glm::mat3(rt.model[op.source])));
-            const glm::quat current = glm::normalize(glm::quat_cast(glm::mat3(world)));
-            const glm::quat rotated = glm::normalize(space * op.rotation * glm::inverse(space) * current);
-            world = glm::translate(glm::mat4(1.0f), glm::vec3(world[3])) * glm::mat4_cast(rotated);
+            BoneTransform original = stream.Local(target);
+            BoneTransform copied = original;
+            const glm::mat4 from = stream.Model(source);
+            if (!stream.SetModel(target, from)) continue;
+            copied = stream.Local(target);
+            copied.t = op.copyTranslation ? glm::mix(original.t, copied.t, weight) : original.t;
+            copied.r = op.copyRotation ? glm::slerp(original.r, copied.r, weight) : original.r;
+            copied.s = op.copyScale ? glm::mix(original.s, copied.s, weight) : original.s;
+            stream.SetLocal(target, copied);
+            continue;
         }
-        const int parent = skeleton.parents[op.target];
-        const glm::mat4 local = parent >= 0 ? glm::inverse(rt.model[parent]) * world : world;
-        glm::vec3 skew;
-        glm::vec4 perspective;
-        glm::decompose(local, rt.pose[op.target].s, rt.pose[op.target].r, rt.pose[op.target].t, skew, perspective);
-        rt.pose[op.target].r = glm::normalize(rt.pose[op.target].r);
-        PoseToModel(skeleton, rt.pose, rt.model);
+        if (op.type == RigOperation::Type::Move || op.type == RigOperation::Type::Modify)
+        {
+            const glm::quat space = rotOf(stream.Model(source));
+            world[3] += glm::vec4(space * op.position * weight, 0.0f);
+        }
+        if (op.type == RigOperation::Type::Rotate || op.type == RigOperation::Type::Modify)
+        {
+            const glm::quat space = rotOf(stream.Model(source));
+            const glm::quat current = rotOf(world);
+            const glm::quat offset = glm::slerp(glm::quat(1, 0, 0, 0), op.rotation, weight);
+            const glm::quat rotated = glm::normalize(space * offset * glm::inverse(space) * current);
+            const glm::vec3 worldScale(glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])),
+                                       glm::length(glm::vec3(world[2])));
+            world = glm::translate(glm::mat4(1.0f), glm::vec3(world[3])) * glm::mat4_cast(rotated) *
+                    glm::scale(glm::mat4(1.0f), worldScale);
+        }
+        stream.SetModel(target, world);
     }
+    rt.model = stream.ModelPose();
 }
 
 // Two-bone arm IK: reaches the hand for the rig's ik_hand_<side> target bone (first-person rigs animate the
@@ -472,10 +588,20 @@ void AnimationSystem::Update(Scene& scene, float dt, bool playing)
         {
             std::error_code ec;
             const auto stamp = fs::last_write_time(path, ec);
-            if (ec || stamp == entry.stamp) continue;
-            entry.stamp = stamp;
-            if (!entry.controller) entry.controller = std::make_unique<AnimatorController>();
-            if (entry.controller->Load(path)) entry.version++;
+            if (!ec && stamp != entry.stamp)
+            {
+                entry.stamp = stamp;
+                if (!entry.controller) entry.controller = std::make_unique<AnimatorController>();
+                if (entry.controller->Load(path))
+                {
+                    entry.version++;
+                    LogIssues(path, *entry.controller); // changed outside the editor: report problems once
+                }
+            }
+            // Blend mask assets can change on disk too (the mask window, or an external editor).
+            if (entry.controller)
+                for (AnimLayer& l : entry.controller->layers)
+                    if (!l.maskAsset.empty() && l.RefreshMaskAsset()) entry.version++;
         }
     }
 
@@ -538,10 +664,21 @@ void AnimationSystem::Update(Scene& scene, float dt, bool playing)
         rt.skeleton = &skeleton;
         if (controller)
         {
-            if (playing)
+            if (!e.animator.active)
+            {
+                // Disabled in the Inspector: the state machine stops and the current pose is kept
+                // (rest pose until the animator has been evaluated once).
+                if (rt.pose.size() != skeleton.names.size()) rt.pose = skeleton.rest;
+            }
+            else if (playing)
             {
                 RootMotion motion;
-                rt.instance.Update(dt, m_Clips, skeleton, true, rt.pose, motion);
+                AnimationGraph graph;
+                auto output = graph.AddController(rt.instance);
+                if (onAnimationStream)
+                    output = graph.AddJob(output, [this, id = e.id](AnimationStream& stream) { onAnimationStream(id, stream); });
+                graph.SetOutput(output);
+                if (!graph.Evaluate(dt, m_Clips, skeleton, true, true, rt.pose, motion)) continue;
                 // Root motion in world space (Animator.deltaPosition / deltaRotation).
                 const glm::mat4 world = scene.WorldMatrix(e.id);
                 rt.deltaPosition = glm::vec3(world * glm::vec4(motion.position, 0.0f));
@@ -562,19 +699,29 @@ void AnimationSystem::Update(Scene& scene, float dt, bool playing)
             else
             {
                 rt.instance.Reset(*controller);
-                rt.instance.SamplePreview(m_Clips, skeleton, rt.pose);
+                AnimationGraph graph;
+                auto output = graph.AddController(rt.instance);
+                if (onAnimationStream)
+                    output = graph.AddJob(output, [this, id = e.id](AnimationStream& stream) { onAnimationStream(id, stream); });
+                graph.SetOutput(output);
+                RootMotion ignored;
+                if (!graph.Evaluate(0.0f, m_Clips, skeleton, false, false, rt.pose, ignored)) continue;
             }
         }
         if (rt.pose.size() != skeleton.names.size()) rt.pose = skeleton.rest;
         if (!scene.Find(animId)) continue;
+        PoseToModel(skeleton, rt.pose, rt.model);
+        ApplyRigOperations(rt, skeleton, true);
         ApplyLook(*scene.Find(animId), rt, skeleton);
         PoseToModel(skeleton, rt.pose, rt.model);
+        // Ordered rig nodes run before the legacy automatic hand IK. Copy targets therefore see the
+        // authored animation, while subsequent Two Bone IK nodes can use those copied targets.
+        ApplyRigOperations(rt, skeleton, false);
         if (scene.Find(animId)->animator.handIk)
         {
             SolveHandIk(rt, skeleton);
             PoseToModel(skeleton, rt.pose, rt.model);
         }
-        ApplyRigOperations(rt, skeleton);
         if (playing && scene.Find(animId)->dynamicBones.enabled)
         {
             SimulateDynamicBones(*scene.Find(animId), scene.WorldMatrix(animId), dt, rt, skeleton);

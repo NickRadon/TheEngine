@@ -1,6 +1,7 @@
 #pragma once
 
 #include "anim/AnimatorController.h"
+#include "anim/AnimationStream.h"
 #include "scene/Scene.h"
 
 #include <filesystem>
@@ -14,9 +15,13 @@ class ResourceCache;
 
 struct RigOperation
 {
-    enum class Type { Copy, Move, Rotate, AddLocalRotation } type = Type::Copy;
+    enum class Type { Copy, Move, Rotate, AddLocalRotation, Modify, TwoBoneIk } type = Type::Copy;
     int target = -1;
     int source = -1; // source bone for Copy, reference space for Move/Rotate
+    int hint = -1;   // optional pole target for TwoBoneIk
+    float weight = 1.0f;
+    bool copyTranslation = true, copyRotation = true, copyScale = true;
+    bool beforeLook = false;
     glm::vec3 position{ 0.0f };
     glm::quat rotation{ 1.0f, 0.0f, 0.0f, 0.0f };
 };
@@ -49,8 +54,14 @@ public:
     // Called after each animator is evaluated in play mode; returns true when a script handled the root motion
     // (Unity's OnAnimatorMove), in which case it isn't applied automatically.
     std::function<bool(EntityId)> onAnimatorMove;
+    // Runs on the writable pose before rig constraints. Handles must not be retained beyond this call.
+    std::function<void(EntityId, AnimationStream&)> onAnimationStream;
     AnimatorController* Controller(const std::string& path); // cached; reloaded when the file changes
     void ControllerEdited(const std::string& path);           // the editor changed it in memory (and saved)
+    // A blend mask asset was saved: re-reads it in every cached controller that references it.
+    void MaskEdited(const std::string& maskPath);
+    // Logs the problems a controller has (missing clips, unknown parameters, broken transitions).
+    void LogIssues(const std::string& path, const AnimatorController& controller);
     ClipLibrary& Clips() { return m_Clips; }
 
 private:
@@ -90,7 +101,7 @@ private:
     void SolveHandIk(Runtime& rt, const Skeleton& skeleton);
     void SimulateDynamicBones(const Entity& e, const glm::mat4& world, float dt, Runtime& rt, const Skeleton& skeleton);
     void UpdateSockets(Scene& scene, const Entity& animator, const Runtime& rt);
-    void ApplyRigOperations(Runtime& rt, const Skeleton& skeleton);
+    void ApplyRigOperations(Runtime& rt, const Skeleton& skeleton, bool beforeLook);
     const MeshData* SkinnedMesh(const Entity& e) const;
 
     ResourceCache* m_Res = nullptr;

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -876,7 +877,9 @@ void Editor::DrawInspector()
     if (e->animator.enabled)
     {
         bool remove = false;
-        if (EditorUI::ComponentHeader("Animator", Icon::Play, nullptr, &remove))
+        Entity* animEntity = e;
+        const bool activeBefore = animEntity->animator.active;
+        if (EditorUI::ComponentHeader("Animator", Icon::Play, &animEntity->animator.active, &remove))
         {
             AnimatorComponent& a = e->animator;
             EditorUI::PropertyLabel("Controller");
@@ -904,40 +907,87 @@ void Editor::DrawInspector()
             }
             ImGui::SameLine(0, 4);
             if (ImGui::Button("Open", ImVec2(48, 0)) && !e->animator.controller.empty()) OpenAnimatorController(e->animator.controller);
-            EditorUI::PropertyLabel("Apply Root Motion");
-            if (ImGui::Checkbox("##rootMotion", &e->animator.applyRootMotion)) MarkEdited();
-            EditorUI::PropertyLabel("Look Bones");
-            char look[256];
-            std::snprintf(look, sizeof(look), "%s", e->animator.lookBones.c_str());
-            if (ImGui::InputText("##lookBones", look, sizeof(look), ImGuiInputTextFlags_EnterReturnsTrue)) { MarkEdited(); e->animator.lookBones = look; }
-            EditorUI::PropertyLabel("Hand IK");
-            if (ImGui::Checkbox("##handIk", &e->animator.handIk)) MarkEdited();
-            ImGui::SetItemTooltip("Two-bone hands reach the rig's ik_hand_r and ik_hand_l targets.");
-            EditorUI::PropertyLabel("Rig Setup");
-            char rig[256];
-            std::snprintf(rig, sizeof(rig), "%s", e->animator.rig.c_str());
-            if (ImGui::InputText("##rigSetup", rig, sizeof(rig), ImGuiInputTextFlags_EnterReturnsTrue))
-            {
-                MarkEdited();
-                e->animator.rig = rig;
-            }
+            EditorUI::PropertyLabel("Rig Controls");
+            const std::string rigLabel = a.rig.empty() ? "None (.rig)" : std::filesystem::path(a.rig).stem().string();
+            if (ImGui::Button(rigLabel.c_str(), ImVec2(bw - 104, 0)) && !a.rig.empty()) OpenRig(a.rig);
             if (ImGui::BeginDragDropTarget())
             {
                 std::string asset;
-                if (AcceptAssetDrop(".rig", asset)) { MarkEdited(); e->animator.rig = asset; }
+                if (AcceptAssetDrop(".rig", asset)) { MarkEdited(); a.rig = asset; }
                 ImGui::EndDragDropTarget();
             }
-            ImGui::SetItemTooltip("Extra helper bones from a Unity character prefab (drop a .rig asset).");
+            ImGui::SameLine(0, 4);
+            if (ImGui::Button("New##rig", ImVec2(48, 0)))
+            {
+                const std::string path = CreateAsset("Assets/Animators", "rig");
+                if (!path.empty()) { MarkEdited(); m_Scene.Find(ActiveEntity())->animator.rig = path; OpenRig(path); }
+                e = m_Scene.Find(ActiveEntity());
+            }
+            ImGui::SameLine(0, 4);
+            if (ImGui::Button("Open##rig", ImVec2(48, 0)) && !e->animator.rig.empty()) OpenRig(e->animator.rig);
+            if (!e->animator.rig.empty() && ImGui::SmallButton("Clear Rig")) { MarkEdited(); e->animator.rig.clear(); }
+            EditorUI::PropertyLabel("Look Bones");
+            char lookBones[256];
+            std::snprintf(lookBones, sizeof(lookBones), "%s", e->animator.lookBones.c_str());
+            if (ImGui::InputText("##lookBones", lookBones, sizeof(lookBones))) { MarkEdited(); e->animator.lookBones = lookBones; }
+            EditorUI::PropertyLabel("Legacy Hand IK");
+            if (ImGui::Checkbox("##legacyHandIk", &e->animator.handIk)) MarkEdited();
+            EditorUI::PropertyLabel("Apply Root Motion");
+            if (ImGui::Checkbox("##rootMotion", &e->animator.applyRootMotion)) MarkEdited();
+            if (e->animator.controller.empty())
+                ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "No Animator Controller assigned.");
+            else if (!m_Animation.Controller(e->animator.controller))
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Controller could not be loaded: %s", e->animator.controller.c_str());
+            if (!e->animator.active)
+                ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "Animator disabled: it does not update in play mode.");
             if (m_Playing)
                 if (AnimatorInstance* inst = m_Animation.Instance(e->id))
                 {
                     const AnimatorController* ctrl = inst->Controller();
-                    const int cur = inst->CurrentState();
-                    ImGui::TextDisabled("State: %s%s%s", cur >= 0 ? ctrl->Base().states[cur].name.c_str() : "-",
-                                        inst->NextState() >= 0 ? " -> " : "", inst->NextState() >= 0 ? ctrl->Base().states[inst->NextState()].name.c_str() : "");
+                    if (!ctrl)
+                    {
+                        ImGui::TextDisabled("State: -");
+                    }
+                    else
+                    {
+                        auto stateName = [&](int li, int index) -> std::string {
+                            const AnimLayer& l = ctrl->layers[li];
+                            return index >= 0 && index < static_cast<int>(l.states.size()) ? l.states[index].name : std::string("<none>");
+                        };
+                        const int li = 0;
+                        const int cur = inst->CurrentState(li), nxt = inst->NextState(li);
+                        ImGui::Text("State: %s%s%s", stateName(li, cur).c_str(), nxt >= 0 ? " -> " : "",
+                                    nxt >= 0 ? stateName(li, nxt).c_str() : "");
+                        if (nxt >= 0)
+                            ImGui::TextDisabled("Transition %.0f%%%s   normalized %.2f", inst->TransitionProgress(li) * 100.0f,
+                                                inst->TransitionInterrupted(li) ? " (interrupted)" : "",
+                                                inst->CurrentNormalizedTime(li));
+                        else
+                            ImGui::TextDisabled("normalized %.2f%s", inst->CurrentNormalizedTime(li),
+                                                inst->TransitionInterrupted(li) ? " (interrupted blend)" : "");
+                        if (inst->LayerCount() > 1)
+                        {
+                            ImGui::TextDisabled("Layers: %d   base weight %.2f", inst->LayerCount(), inst->LayerWeight(0));
+                            for (int l = 1; l < inst->LayerCount() && l < 4; ++l)
+                                ImGui::TextDisabled("   %s: %.2f", ctrl->layers[l].name.c_str(), inst->LayerWeight(l));
+                        }
+                        for (const AnimParam& p : ctrl->params)
+                        {
+                            const float v = inst->GetParam(p.name);
+                            if (p.type == AnimParamType::Bool || p.type == AnimParamType::Trigger)
+                                ImGui::TextDisabled("%s: %s", p.name.c_str(), v != 0.0f ? "on" : "off");
+                            else if (p.type == AnimParamType::Int)
+                                ImGui::TextDisabled("%s: %d", p.name.c_str(), static_cast<int>(v));
+                            else
+                                ImGui::TextDisabled("%s: %.2f", p.name.c_str(), v);
+                        }
+                    }
                 }
+            else if (m_AnimCtrlPath == e->animator.controller && !m_AnimIssues.empty())
+                ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "Warnings: %zu (open the Animator window)", m_AnimIssues.size());
             ImGui::Spacing();
         }
+        if (animEntity->animator.active != activeBefore && !remove) MarkEdited();
         if (remove)
         {
             PushUndo();

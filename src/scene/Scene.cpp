@@ -459,7 +459,8 @@ std::vector<EntityProperty> SerializeEntity(const Entity& e, bool includeObject)
     {
         const auto& a = e.animator;
         std::ostringstream o;
-        o << "animator " << a.enabled << ' ' << std::quoted(a.controller) << ' ' << a.applyRootMotion << ' ' << std::quoted(a.lookBones) << ' ' << a.handIk << ' ' << std::quoted(a.rig);
+        o << "animator " << a.enabled << ' ' << std::quoted(a.controller) << ' ' << a.applyRootMotion << ' ' << std::quoted(a.lookBones) << ' '
+          << a.handIk << ' ' << std::quoted(a.rig) << ' ' << a.active;
         add("animator", o);
     }
     {
@@ -588,6 +589,8 @@ bool ParseEntityLine(Entity& e, const std::string& line)
             in >> std::quoted(a.lookBones) >> a.handIk >> std::ws;
             if (in.peek() == '"') in >> std::quoted(a.rig);
         }
+        in >> std::ws;
+        if (in.peek() != std::char_traits<char>::eof()) in >> a.active; // older scenes: the Animator stays active
         return true;
     }
     else if (key == "socket")

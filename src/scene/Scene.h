@@ -109,6 +109,9 @@ struct AnimatorComponent
 {
     bool enabled = false;
     std::string controller;      // .controller asset
+    // The Inspector's enabled checkbox: the component stays, but the state machine stops evaluating
+    // (the last pose is kept). `enabled` above is "this object has an Animator".
+    bool active = true;
     bool applyRootMotion = true; // move the object with the animation's root motion (play mode)
     // Look modifier: Animator.SetLookAngles spreads pitch/yaw over these bones (spine to head).
     std::string lookBones = "spine_01,spine_02,spine_03,spine_04,spine_05,neck_01,head";

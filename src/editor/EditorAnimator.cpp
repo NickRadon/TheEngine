@@ -51,6 +51,14 @@ namespace
 // ---------------------------------------------------------------------------
 void Editor::OpenAnimatorController(const std::string& path)
 {
+    if (path != m_AnimCtrlPath)
+    {
+        // Undo history belongs to one controller file at a time.
+        m_AnimUndo.clear();
+        m_AnimRedo.clear();
+        m_AnimEditArmed = false;
+        m_AnimPreEdit.clear();
+    }
     m_AnimCtrlPath = path;
     m_AnimSelState.clear();
     m_AnimSelTransition = -1;
@@ -73,6 +81,76 @@ void Editor::SaveEditedController()
     if (c->Save(m_AnimCtrlPath)) m_Animation.ControllerEdited(m_AnimCtrlPath);
     else LOG_ERROR("Could not save %s", m_AnimCtrlPath.c_str());
     m_AnimCtrlDirty = false;
+    m_AnimEditArmed = false; // the stroke is committed: the next change starts a new undo entry
+}
+
+// Controller edits are merged into one undo entry per "stroke" (a drag, a click, an Enter commit).
+// The entry is the controller text captured before the frame's widgets touched it.
+void Editor::MarkAnimEdited()
+{
+    m_AnimCtrlDirty = true;
+    if (m_AnimEditArmed) return;
+    m_AnimEditArmed = true;
+    AnimSnapshot s;
+    s.path = m_AnimCtrlPath;
+    s.text = m_AnimPreEdit;
+    m_AnimUndo.push_back(s);
+    if (m_AnimUndo.size() > 64) m_AnimUndo.pop_front();
+    m_AnimRedo.clear();
+}
+
+bool Editor::AnimUndoAvailable() const { return !m_AnimUndo.empty(); }
+bool Editor::AnimRedoAvailable() const { return !m_AnimRedo.empty(); }
+
+namespace
+{
+    // Selection and layer indices can dangle after a controller is replaced by undo/redo.
+    void ClampAnimSelection(AnimatorController& c, std::string& selState, int& selTransition, int& layer)
+    {
+        if (layer >= static_cast<int>(c.layers.size())) layer = 0;
+        if (layer < 0) layer = 0;
+        AnimLayer& l = c.layers[layer];
+        if (selTransition >= static_cast<int>(l.transitions.size())) selTransition = -1;
+        if (!selState.empty() && selState != AnimatorController::kAnyState && l.FindState(selState) < 0)
+        {
+            selState.clear();
+            selTransition = -1;
+        }
+    }
+}
+
+bool Editor::AnimUndo()
+{
+    if (m_AnimUndo.empty()) return false;
+    AnimatorController* c = EditedController();
+    if (!c) { m_AnimUndo.clear(); return false; }
+    const AnimSnapshot target = m_AnimUndo.back();
+    m_AnimUndo.pop_back();
+    if (target.path != m_AnimCtrlPath) return false; // entry belongs to another file
+    m_AnimRedo.push_back(AnimSnapshot{ m_AnimCtrlPath, c->ToString() });
+    if (m_AnimRedo.size() > 64) m_AnimRedo.erase(m_AnimRedo.begin());
+    if (!c->LoadString(target.text)) return false;
+    ClampAnimSelection(*c, m_AnimSelState, m_AnimSelTransition, m_AnimLayer);
+    m_AnimEditArmed = false;
+    m_AnimCtrlDirty = true; // write the restored text back to disk
+    return true;
+}
+
+bool Editor::AnimRedo()
+{
+    if (m_AnimRedo.empty()) return false;
+    AnimatorController* c = EditedController();
+    if (!c) { m_AnimRedo.clear(); return false; }
+    const AnimSnapshot target = m_AnimRedo.back();
+    m_AnimRedo.pop_back();
+    if (target.path != m_AnimCtrlPath) return false;
+    m_AnimUndo.push_back(AnimSnapshot{ m_AnimCtrlPath, c->ToString() });
+    if (m_AnimUndo.size() > 64) m_AnimUndo.pop_front();
+    if (!c->LoadString(target.text)) return false;
+    ClampAnimSelection(*c, m_AnimSelState, m_AnimSelTransition, m_AnimLayer);
+    m_AnimEditArmed = false;
+    m_AnimCtrlDirty = true;
+    return true;
 }
 
 const std::vector<std::string>& Editor::AnimationFiles()
@@ -163,9 +241,11 @@ void Editor::DrawAnimator()
     }
     if (!ImGui::Begin("Animator"))
     {
+        m_AnimFocused = false;
         ImGui::End();
         return;
     }
+    m_AnimFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     m_AnimFilesTimer -= ImGui::GetIO().DeltaTime;
 
     // Follow the selection: an object with an Animator shows its controller (and its live state in play mode).
@@ -195,6 +275,12 @@ void Editor::DrawAnimator()
         return;
     }
 
+    // Undo snapshot: the controller as it was before this frame's widgets edit it, plus validation
+    // (cheap text-level walk; clip misses are cached after the first probe) for the status bar.
+    if (!m_AnimEditArmed) m_AnimPreEdit = c->ToString();
+    m_AnimIssues = c->Validate(&m_Animation.Clips(), live ? m_Animation.SkeletonOf(live) : nullptr);
+    if (m_AnimLayer >= static_cast<int>(c->layers.size())) m_AnimLayer = 0;
+
     // Toolbar
     ImGui::TextUnformatted(fs::path(m_AnimCtrlPath).stem().string().c_str());
     ImGui::SameLine();
@@ -206,7 +292,9 @@ void Editor::DrawAnimator()
     ImGui::Separator();
 
     const float leftW = 210.0f, rightW = 300.0f;
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float statusH = 46.0f; // reserved for the status bar under the three panes
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    avail.y = std::max(avail.y - statusH - ImGui::GetStyle().ItemSpacing.y, 80.0f);
 
     // ---------------- Parameters ----------------
     ImGui::BeginChild("##params", ImVec2(leftW, avail.y), ImGuiChildFlags_Borders);
@@ -224,7 +312,7 @@ void Editor::DrawAnimator()
                 p.name = "New " + std::string(names[i]);
                 for (int n = 1; c->FindParam(p.name) >= 0; ++n) p.name = "New " + std::string(names[i]) + " " + std::to_string(n);
                 c->params.push_back(p);
-                m_AnimCtrlDirty = true;
+                MarkAnimEdited();
             }
         ImGui::EndPopup();
     }
@@ -252,7 +340,7 @@ void Editor::DrawAnimator()
                 }
             }
             p.name = name;
-            m_AnimCtrlDirty = true;
+            MarkAnimEdited();
         }
         if (ImGui::BeginPopupContextItem("ParamContext"))
         {
@@ -294,7 +382,7 @@ void Editor::DrawAnimator()
             else if (p.type != AnimParamType::Trigger)
             {
                 p.defaultValue = value;
-                m_AnimCtrlDirty = true;
+                MarkAnimEdited();
             }
         }
         ImGui::PopID();
@@ -302,7 +390,7 @@ void Editor::DrawAnimator()
     if (removeParam >= 0)
     {
         c->params.erase(c->params.begin() + removeParam);
-        m_AnimCtrlDirty = true;
+        MarkAnimEdited();
     }
     if (c->params.empty()) ImGui::TextDisabled("No parameters. Use + to add one.");
 
@@ -322,7 +410,7 @@ void Editor::DrawAnimator()
         m_AnimSelState.clear();
         m_AnimSelTransition = -1;
         m_AnimFrameRequest = true;
-        m_AnimCtrlDirty = true;
+        MarkAnimEdited();
     }
     ImGui::Separator();
     int removeLayer = -1;
@@ -350,7 +438,7 @@ void Editor::DrawAnimator()
     {
         c->layers.erase(c->layers.begin() + removeLayer);
         m_AnimLayer = 0;
-        m_AnimCtrlDirty = true;
+        MarkAnimEdited();
     }
     AnimLayer& layer = c->layers[m_AnimLayer];
     ImGui::Spacing();
@@ -360,7 +448,7 @@ void Editor::DrawAnimator()
     if (ImGui::InputText("##layerName", layerName, sizeof(layerName), ImGuiInputTextFlags_EnterReturnsTrue) && layerName[0])
     {
         layer.name = layerName;
-        m_AnimCtrlDirty = true;
+        MarkAnimEdited();
     }
     if (m_AnimLayer > 0)
     {
@@ -369,36 +457,108 @@ void Editor::DrawAnimator()
         if (ImGui::SliderFloat("##layerWeight", &weight, 0.0f, 1.0f, "Weight %.2f"))
         {
             if (instance) instance->SetLayerWeight(m_AnimLayer, weight);
-            else { layer.weight = weight; m_AnimCtrlDirty = true; }
+            else { layer.weight = weight; MarkAnimEdited(); }
         }
         int blending = static_cast<int>(layer.blending);
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##blending", &blending, "Override Additive ")) { layer.blending = static_cast<AnimLayerBlending>(blending); m_AnimCtrlDirty = true; }
-        // Avatar mask: bones whose subtrees the layer drives (comma separated, empty = whole body).
-        std::string mask;
-        for (const std::string& b : layer.mask) mask += (mask.empty() ? "" : ", ") + b;
-        char maskText[256];
-        std::snprintf(maskText, sizeof(maskText), "%s", mask.c_str());
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::InputTextWithHint("##mask", "Mask bones (e.g. spine_01)", maskText, sizeof(maskText), ImGuiInputTextFlags_EnterReturnsTrue))
+        if (ImGui::Combo("##blending", &blending, "Override Additive ")) { layer.blending = static_cast<AnimLayerBlending>(blending); MarkAnimEdited(); }
+        ImGui::TextDisabled("Mask Asset");
+        const std::string maskLabel = layer.maskAsset.empty() ? "None (Blend Mask)" : fs::path(layer.maskAsset).stem().string();
+        if (ImGui::Button(maskLabel.c_str(), ImVec2(-FLT_MIN, 0))) ImGui::OpenPopup("MaskPicker");
+        if (!layer.maskAsset.empty()) ImGui::SetItemTooltip("%s", layer.maskAsset.c_str());
+        if (ImGui::BeginDragDropTarget())
         {
-            layer.mask.clear();
-            std::string token;
-            for (const char* p = maskText; ; ++p)
+            std::string asset;
+            if (AcceptAssetDrop(".mask", asset))
             {
-                if (*p == ',' || *p == 0)
+                if (BlendMask::IsMaskFile(asset))
                 {
-                    while (!token.empty() && token.back() == ' ') token.pop_back();
-                    size_t start = token.find_first_not_of(' ');
-                    if (start != std::string::npos) layer.mask.push_back(token.substr(start));
-                    token.clear();
-                    if (!*p) break;
+                    layer.maskAsset = asset;
+                    layer.mask.clear();
+                    layer.RefreshMaskAsset();
+                    MarkAnimEdited();
                 }
-                else token += *p;
+                else Notify("That .mask file is not a TheEngine blend mask");
             }
-            m_AnimCtrlDirty = true;
+            ImGui::EndDragDropTarget();
         }
-        ImGui::SetItemTooltip("Bones whose subtrees this layer animates, e.g. \"spine_01\" for the upper body. Empty = whole body.");
+        if (ImGui::BeginPopup("MaskPicker"))
+        {
+            if (ImGui::Selectable("None (Blend Mask)", layer.maskAsset.empty()))
+            {
+                layer.maskAsset.clear();
+                layer.RefreshMaskAsset();
+                MarkAnimEdited();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::Separator();
+            std::error_code ec;
+            for (auto it = fs::recursive_directory_iterator("Assets", ec); it != fs::recursive_directory_iterator(); it.increment(ec))
+            {
+                if (!it->is_regular_file(ec)) continue;
+                const std::string path = it->path().generic_string();
+                if (!BlendMask::IsMaskFile(path)) continue;
+                if (ImGui::Selectable(path.c_str(), layer.maskAsset == path))
+                {
+                    layer.maskAsset = path;
+                    layer.mask.clear();
+                    layer.RefreshMaskAsset();
+                    MarkAnimEdited();
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::BeginDisabled(layer.maskAsset.empty());
+        if (ImGui::SmallButton("Edit")) OpenBlendMask(layer.maskAsset);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear"))
+        {
+            layer.maskAsset.clear();
+            layer.RefreshMaskAsset();
+            MarkAnimEdited();
+        }
+        ImGui::EndDisabled();
+        if (!layer.maskAsset.empty())
+        {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%d resolved bone%s", static_cast<int>(layer.maskAssetBones.size()), layer.maskAssetBones.size() == 1 ? "" : "s");
+            if (layer.maskAssetMissing)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.25f, 1.0f));
+                ImGui::TextWrapped("Blend mask could not be loaded; this layer drives no bones.");
+                ImGui::PopStyleColor();
+            }
+        }
+
+        // Old controllers can keep using their inline comma-separated include list until an asset is assigned.
+        if (layer.maskAsset.empty())
+        {
+            std::string mask;
+            for (const std::string& b : layer.mask) mask += (mask.empty() ? "" : ", ") + b;
+            char maskText[256];
+            std::snprintf(maskText, sizeof(maskText), "%s", mask.c_str());
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputTextWithHint("##mask", "Inline mask bones (legacy)", maskText, sizeof(maskText), ImGuiInputTextFlags_EnterReturnsTrue))
+            {
+                layer.mask.clear();
+                std::string token;
+                for (const char* p = maskText; ; ++p)
+                {
+                    if (*p == ',' || *p == 0)
+                    {
+                        while (!token.empty() && token.back() == ' ') token.pop_back();
+                        const size_t start = token.find_first_not_of(' ');
+                        if (start != std::string::npos) layer.mask.push_back(token.substr(start));
+                        token.clear();
+                        if (!*p) break;
+                    }
+                    else token += *p;
+                }
+                MarkAnimEdited();
+            }
+            ImGui::SetItemTooltip("Legacy inline bones whose subtrees this layer animates. Empty = whole body.");
+        }
     }
     ImGui::EndChild();
 
@@ -410,6 +570,8 @@ void Editor::DrawAnimator()
     ImGui::BeginChild("##props", ImVec2(rightW, avail.y), ImGuiChildFlags_Borders);
     DrawAnimatorSelection(*c, instance);
     ImGui::EndChild();
+
+    DrawAnimatorStatus(*c, instance, ImGui::GetContentRegionAvail().x);
 
     if (m_AnimCtrlDirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive()) SaveEditedController();
     ImGui::End();
@@ -499,6 +661,27 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
         return {};
     };
 
+    // Validation issues of the open controller (see DrawAnimator) shown as amber markers.
+    auto issueForTransition = [&](int index) {
+        for (const AnimIssue& is : m_AnimIssues)
+            if (is.layer == m_AnimLayer && is.transition == index) return true;
+        return false;
+    };
+    auto issueForState = [&](int index) {
+        for (const AnimIssue& is : m_AnimIssues)
+            if (is.layer == m_AnimLayer && is.state == index) return true;
+        return false;
+    };
+    auto warnBadge = [&](glm::vec2 pos) {
+        const ImVec2 p = toScreen(pos);
+        const float r = 7.0f * std::max(m_AnimZoom, 0.6f);
+        const ImVec2 cc(p.x + kNodeW * m_AnimZoom - r * 0.5f, p.y + r * 0.5f);
+        const float fs = ImGui::GetFontSize() * 1.1f;
+        const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "!");
+        dl->AddCircleFilled(cc, r, Col(240, 175, 45));
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(cc.x - ts.x * 0.5f, cc.y - ts.y * 0.5f), Col(45, 30, 5), "!");
+    };
+
     // Transitions (arrows); pairs in both directions are offset so both stay clickable.
     auto arrow = [&](ImVec2 a, ImVec2 b, ImU32 col, float thickness) {
         dl->AddLine(a, b, col, thickness);
@@ -533,7 +716,9 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
         if (over) hoveredTransition = static_cast<int>(i);
         const bool active = instance && instance->NextState(m_AnimLayer) >= 0 && instance->Controller()->layers[m_AnimLayer].states[instance->NextState(m_AnimLayer)].name == t.to &&
                             (t.from == kAny || (instance->CurrentState(m_AnimLayer) >= 0 && instance->Controller()->layers[m_AnimLayer].states[instance->CurrentState(m_AnimLayer)].name == t.from));
-        arrow(a, b, selected ? Col(88, 160, 255) : active ? Col(80, 180, 255) : over ? Col(230, 230, 230) : Col(200, 200, 200), selected ? 3.0f : 2.0f);
+        arrow(a, b, selected ? Col(88, 160, 255) : active ? Col(80, 180, 255) : over ? Col(230, 230, 230)
+                             : issueForTransition(static_cast<int>(i)) ? Col(235, 175, 50) : Col(200, 200, 200),
+              selected ? 3.0f : 2.0f);
     }
     // Entry -> default state
     if (c.FindState(c.defaultState) >= 0) arrow(nodeCenter(kEntry), nodeCenter(c.defaultState), Col(220, 140, 60), 2.0f);
@@ -589,6 +774,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
         }
         const char* subtitle = s.type == AnimMotionType::BlendTree2D ? "Blend Tree 2D" : s.type == AnimMotionType::BlendTree1D ? "Blend Tree 1D" : nullptr;
         drawNode(s.name, s.name, s.position, isDefault ? Col(194, 100, 26) : Col(72, 72, 72), m_AnimSelState == s.name, progress, subtitle);
+        if (issueForState(static_cast<int>(i))) warnBadge(s.position);
     }
 
     // Interaction
@@ -607,7 +793,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
                 c.transitions.push_back(t);
                 m_AnimSelTransition = static_cast<int>(c.transitions.size()) - 1;
                 m_AnimSelState.clear();
-                m_AnimCtrlDirty = true;
+                MarkAnimEdited();
             }
             m_AnimLinkFrom.clear();
         }
@@ -634,7 +820,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
         if (m_AnimDragNode == kEntry) c.entryPosition += d;
         else if (m_AnimDragNode == kAny) c.anyStatePosition += d;
         else if (int i = c.FindState(m_AnimDragNode); i >= 0) c.states[i].position += d;
-        m_AnimCtrlDirty = true;
+        MarkAnimEdited();
     }
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) m_AnimDragNode.clear();
 
@@ -665,7 +851,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
         c.states.push_back(s);
         m_AnimSelState = s.name;
         m_AnimSelTransition = -1;
-        m_AnimCtrlDirty = true;
+        MarkAnimEdited();
     };
     if (ImGui::BeginPopup("GraphContext"))
     {
@@ -687,7 +873,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
             if (ImGui::MenuItem("Set as Layer Default State", nullptr, false, c.defaultState != node))
             {
                 c.defaultState = node;
-                m_AnimCtrlDirty = true;
+                MarkAnimEdited();
             }
             if (ImGui::MenuItem("Copy (Duplicate)"))
             {
@@ -697,7 +883,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
                     copy.name = c.UniqueStateName(node);
                     copy.position += glm::vec2(30.0f, 30.0f);
                     c.states.push_back(copy);
-                    m_AnimCtrlDirty = true;
+                    MarkAnimEdited();
                 }
             }
             ImGui::Separator();
@@ -706,7 +892,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
                 c.RemoveState(node);
                 m_AnimSelState.clear();
                 m_AnimSelTransition = -1;
-                m_AnimCtrlDirty = true;
+                MarkAnimEdited();
             }
         }
         ImGui::EndPopup();
@@ -731,13 +917,13 @@ void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* insta
         {
             c.transitions.erase(c.transitions.begin() + m_AnimSelTransition);
             m_AnimSelTransition = -1;
-            m_AnimCtrlDirty = true;
+            MarkAnimEdited();
         }
         else if (!m_AnimSelState.empty() && m_AnimSelState != kAny)
         {
             c.RemoveState(m_AnimSelState);
             m_AnimSelState.clear();
-            m_AnimCtrlDirty = true;
+            MarkAnimEdited();
         }
     }
 
@@ -782,14 +968,33 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
         ImGui::Text("%s  ->  %s", t.from.c_str(), t.to.c_str());
         ImGui::Separator();
         EditorUI::PropertyLabel("Has Exit Time");
-        if (ImGui::Checkbox("##exit", &t.hasExitTime)) m_AnimCtrlDirty = true;
+        if (ImGui::Checkbox("##exit", &t.hasExitTime)) MarkAnimEdited();
         if (t.hasExitTime)
         {
             EditorUI::PropertyLabel("Exit Time");
-            if (ImGui::DragFloat("##exitTime", &t.exitTime, 0.01f, 0.0f, 10.0f, "%.2f")) m_AnimCtrlDirty = true;
+            if (ImGui::DragFloat("##exitTime", &t.exitTime, 0.01f, 0.0f, 10.0f, "%.2f")) MarkAnimEdited();
         }
         EditorUI::PropertyLabel("Transition Duration (s)");
-        if (ImGui::DragFloat("##duration", &t.duration, 0.01f, 0.0f, 5.0f, "%.2f")) m_AnimCtrlDirty = true;
+        if (ImGui::DragFloat("##duration", &t.duration, 0.01f, 0.0f, 5.0f, "%.2f")) MarkAnimEdited();
+
+        ImGui::SeparatorText("Interruption");
+        EditorUI::PropertyLabel("Interruption Source");
+        int interruption = static_cast<int>(t.interruption);
+        if (ImGui::Combo("##interrupt", &interruption, "None\0Current State\0Next State\0Current then Next\0Next then Current\0"))
+        {
+            t.interruption = static_cast<AnimInterruption>(interruption);
+            MarkAnimEdited();
+        }
+        ImGui::SetItemTooltip("Transitions that may fire while this one is still blending. None = the transition always finishes.");
+        if (t.interruption != AnimInterruption::None)
+        {
+            EditorUI::PropertyLabel("Ordered Interruption");
+            if (ImGui::Checkbox("##orderedInt", &t.ordered)) MarkAnimEdited();
+            ImGui::SetItemTooltip("Check transitions in the order they are listed in the layer instead of Any State transitions first.");
+        }
+        for (const AnimIssue& is : m_AnimIssues)
+            if (is.layer == m_AnimLayer && is.transition == m_AnimSelTransition)
+                ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "%s", is.text.c_str());
 
         ImGui::SeparatorText("Conditions");
         int remove = -1;
@@ -808,7 +1013,7 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
                         cond.param = p.name;
                         cond.mode = p.type == AnimParamType::Bool || p.type == AnimParamType::Trigger ? AnimConditionMode::If
                                                                                                      : AnimConditionMode::Greater;
-                        m_AnimCtrlDirty = true;
+                        MarkAnimEdited();
                     }
                 ImGui::EndCombo();
             }
@@ -817,18 +1022,18 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
             {
                 ImGui::SetNextItemWidth(80);
                 int v = cond.mode == AnimConditionMode::IfNot ? 1 : 0;
-                if (ImGui::Combo("##mode", &v, "true\0false\0")) { cond.mode = v ? AnimConditionMode::IfNot : AnimConditionMode::If; m_AnimCtrlDirty = true; }
+                if (ImGui::Combo("##mode", &v, "true\0false\0")) { cond.mode = v ? AnimConditionMode::IfNot : AnimConditionMode::If; MarkAnimEdited(); }
             }
             else if (type == AnimParamType::Float || type == AnimParamType::Int)
             {
                 const char* modes = type == AnimParamType::Float ? "Greater\0Less\0" : "Greater\0Less\0Equals\0NotEqual\0";
                 int v = static_cast<int>(cond.mode) - static_cast<int>(AnimConditionMode::Greater);
                 ImGui::SetNextItemWidth(80);
-                if (ImGui::Combo("##mode", &v, modes)) { cond.mode = static_cast<AnimConditionMode>(v + 2); m_AnimCtrlDirty = true; }
+                if (ImGui::Combo("##mode", &v, modes)) { cond.mode = static_cast<AnimConditionMode>(v + 2); MarkAnimEdited(); }
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(60);
                 if (ImGui::DragFloat("##threshold", &cond.threshold, 0.01f, 0.0f, 0.0f, type == AnimParamType::Int ? "%.0f" : "%.2f"))
-                    m_AnimCtrlDirty = true;
+                    MarkAnimEdited();
             }
             else
             {
@@ -838,7 +1043,7 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
             if (ImGui::SmallButton("-")) remove = static_cast<int>(i);
             ImGui::PopID();
         }
-        if (remove >= 0) { t.conditions.erase(t.conditions.begin() + remove); m_AnimCtrlDirty = true; }
+        if (remove >= 0) { t.conditions.erase(t.conditions.begin() + remove); MarkAnimEdited(); }
         if (ImGui::SmallButton("+ Condition"))
         {
             AnimCondition cond;
@@ -848,7 +1053,7 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
                 if (ctrl.params[0].type == AnimParamType::Bool || ctrl.params[0].type == AnimParamType::Trigger) cond.mode = AnimConditionMode::If;
             }
             t.conditions.push_back(cond);
-            m_AnimCtrlDirty = true;
+            MarkAnimEdited();
         }
         if (!t.hasExitTime && t.conditions.empty())
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "A transition needs an exit time or at least one condition.");
@@ -857,7 +1062,7 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
         {
             c.transitions.erase(c.transitions.begin() + m_AnimSelTransition);
             m_AnimSelTransition = -1;
-            m_AnimCtrlDirty = true;
+            MarkAnimEdited();
         }
         return;
     }
@@ -884,19 +1089,21 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
     {
         c.RenameState(s.name, name);
         m_AnimSelState = name;
-        m_AnimCtrlDirty = true;
+        MarkAnimEdited();
         return;
     }
     if (s.name == c.defaultState) ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.2f, 1.0f), "Default state");
+    for (const AnimIssue& is : m_AnimIssues)
+        if (is.layer == m_AnimLayer && is.state == si) ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "%s", is.text.c_str());
     ImGui::Separator();
 
     EditorUI::PropertyLabel("Motion");
     int type = static_cast<int>(s.type);
-    if (ImGui::Combo("##type", &type, "Clip\0Blend Tree 1D\0Blend Tree 2D (Freeform)\0")) { s.type = static_cast<AnimMotionType>(type); m_AnimCtrlDirty = true; }
+    if (ImGui::Combo("##type", &type, "Clip\0Blend Tree 1D\0Blend Tree 2D (Freeform)\0")) { s.type = static_cast<AnimMotionType>(type); MarkAnimEdited(); }
     EditorUI::PropertyLabel("Speed");
-    if (ImGui::DragFloat("##speed", &s.speed, 0.01f, -5.0f, 5.0f, "%.2f")) m_AnimCtrlDirty = true;
+    if (ImGui::DragFloat("##speed", &s.speed, 0.01f, -5.0f, 5.0f, "%.2f")) MarkAnimEdited();
     EditorUI::PropertyLabel("Loop");
-    if (ImGui::Checkbox("##loop", &s.loop)) m_AnimCtrlDirty = true;
+    if (ImGui::Checkbox("##loop", &s.loop)) MarkAnimEdited();
 
     auto clipInfo = [&](const std::string& ref) {
         if (ref.empty()) return;
@@ -913,14 +1120,14 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
     if (s.type == AnimMotionType::Clip)
     {
         EditorUI::PropertyLabel("Clip");
-        if (ClipField("clip", s.clip)) m_AnimCtrlDirty = true;
+        if (ClipField("clip", s.clip)) MarkAnimEdited();
         clipInfo(s.clip);
     }
     else
     {
         const bool twoD = s.type == AnimMotionType::BlendTree2D;
-        if (paramCombo(twoD ? "Parameter X" : "Parameter", s.paramX)) m_AnimCtrlDirty = true;
-        if (twoD && paramCombo("Parameter Y", s.paramY)) m_AnimCtrlDirty = true;
+        if (paramCombo(twoD ? "Parameter X" : "Parameter", s.paramX)) MarkAnimEdited();
+        if (twoD && paramCombo("Parameter Y", s.paramY)) MarkAnimEdited();
 
         ImGui::SeparatorText("Motions");
         int remove = -1;
@@ -928,33 +1135,33 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
         {
             BlendChild& ch = s.children[i];
             ImGui::PushID(static_cast<int>(i));
-            if (ClipField("childClip", ch.clip)) m_AnimCtrlDirty = true;
+            if (ClipField("childClip", ch.clip)) MarkAnimEdited();
             if (twoD)
             {
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70);
-                if (ImGui::DragFloat2("##pos", &ch.position.x, 0.01f, 0.0f, 0.0f, "%.2f")) m_AnimCtrlDirty = true;
+                if (ImGui::DragFloat2("##pos", &ch.position.x, 0.01f, 0.0f, 0.0f, "%.2f")) MarkAnimEdited();
             }
             else
             {
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70);
-                if (ImGui::DragFloat("##threshold", &ch.threshold, 0.01f, 0.0f, 0.0f, "threshold %.2f")) m_AnimCtrlDirty = true;
+                if (ImGui::DragFloat("##threshold", &ch.threshold, 0.01f, 0.0f, 0.0f, "threshold %.2f")) MarkAnimEdited();
             }
             ImGui::SameLine();
             ImGui::SetNextItemWidth(40);
-            if (ImGui::DragFloat("##childSpeed", &ch.speed, 0.01f, 0.05f, 5.0f, "%.1fx")) m_AnimCtrlDirty = true;
+            if (ImGui::DragFloat("##childSpeed", &ch.speed, 0.01f, 0.05f, 5.0f, "%.1fx")) MarkAnimEdited();
             ImGui::SameLine();
             if (ImGui::SmallButton("-")) remove = static_cast<int>(i);
             ImGui::PopID();
             ImGui::Spacing();
         }
-        if (remove >= 0) { s.children.erase(s.children.begin() + remove); m_AnimCtrlDirty = true; }
+        if (remove >= 0) { s.children.erase(s.children.begin() + remove); MarkAnimEdited(); }
         if (ImGui::SmallButton("+ Motion"))
         {
             BlendChild ch;
             if (!s.children.empty()) ch = s.children.back();
             ch.clip.clear();
             s.children.push_back(ch);
-            m_AnimCtrlDirty = true;
+            MarkAnimEdited();
         }
 
         // 2D blend space diagram: motions as dots, the current parameter value as a red marker.
@@ -991,4 +1198,83 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
         if (ImGui::Selectable(label.c_str())) { m_AnimSelTransition = static_cast<int>(i); }
     }
     if (!any) ImGui::TextDisabled("None (right-click the state > Make Transition)");
+}
+
+// ---------------------------------------------------------------------------
+// Status bar: live playback info, validation warnings, controller undo/redo.
+// ---------------------------------------------------------------------------
+void Editor::DrawAnimatorStatus(AnimatorController& c, AnimatorInstance* instance, float width)
+{
+    ImGui::Separator();
+
+    const int li = std::clamp(m_AnimLayer, 0, static_cast<int>(c.layers.size()) - 1);
+    const AnimLayer& layer = c.layers[li];
+    auto stateName = [&](int index) -> std::string {
+        return index >= 0 && index < static_cast<int>(layer.states.size()) ? layer.states[index].name : std::string("<none>");
+    };
+
+    // --- Playback: which layer, which state, how far into the transition ---
+    if (instance)
+    {
+        const int cur = instance->CurrentState(li), nxt = instance->NextState(li);
+        if (nxt >= 0)
+            ImGui::Text("Layer %d  %s  ->  %s  %.0f%%%s", li, stateName(cur).c_str(), stateName(nxt).c_str(),
+                        instance->TransitionProgress(li) * 100.0f, instance->TransitionInterrupted(li) ? "  (interrupted)" : "");
+        else
+            ImGui::Text("Layer %d  %s%s", li, stateName(cur).c_str(), instance->TransitionInterrupted(li) ? "  (interrupted blend)" : "");
+        ImGui::SameLine();
+        ImGui::TextDisabled("normalized %.2f   weight %.2f", instance->CurrentNormalizedTime(li), instance->LayerWeight(li));
+    }
+    else
+    {
+        ImGui::TextDisabled("Layer %d  %s   (not playing - press Play to watch the graph run)", li, layer.name.c_str());
+    }
+
+    // --- Warnings (validation run each frame in DrawAnimator) ---
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 12.0f, width - 190.0f));
+    const size_t warnCount = m_AnimIssues.size();
+    if (warnCount == 0) ImGui::TextDisabled("No warnings");
+    else
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.52f, 0.38f, 0.08f, 1.0f));
+        if (ImGui::SmallButton((std::string("Warnings (") + std::to_string(warnCount) + ")").c_str())) ImGui::OpenPopup("AnimIssuesPopup");
+        ImGui::PopStyleColor();
+        if (ImGui::BeginPopup("AnimIssuesPopup"))
+        {
+            ImGui::TextUnformatted("Click an issue to select it in the graph.");
+            ImGui::Separator();
+            for (size_t i = 0; i < m_AnimIssues.size(); ++i)
+            {
+                const AnimIssue& is = m_AnimIssues[i];
+                if (!ImGui::Selectable((std::to_string(i + 1) + ". " + is.text).c_str())) continue;
+                const int targetLayer = is.layer >= 0 && is.layer < static_cast<int>(c.layers.size()) ? is.layer : li;
+                m_AnimLayer = targetLayer;
+                const AnimLayer& l2 = c.layers[targetLayer];
+                if (is.state >= 0 && is.state < static_cast<int>(l2.states.size()))
+                {
+                    m_AnimSelState = l2.states[is.state].name;
+                    m_AnimSelTransition = -1;
+                    m_AnimFrameRequest = true;
+                }
+                else if (is.transition >= 0 && is.transition < static_cast<int>(l2.transitions.size()))
+                {
+                    m_AnimSelTransition = is.transition;
+                    m_AnimSelState.clear();
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    // --- Undo / redo of the controller asset (independent of scene undo) ---
+    ImGui::TextDisabled("Ctrl+Z / Ctrl+Y here undo controller edits");
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 12.0f, width - 210.0f));
+    if (!AnimUndoAvailable()) ImGui::BeginDisabled();
+    if (ImGui::SmallButton("Undo")) AnimUndo();
+    if (!AnimUndoAvailable()) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!AnimRedoAvailable()) ImGui::BeginDisabled();
+    if (ImGui::SmallButton("Redo")) AnimRedo();
+    if (!AnimRedoAvailable()) ImGui::EndDisabled();
 }

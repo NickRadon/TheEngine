@@ -4,6 +4,8 @@
 
 #include <glm/glm.hpp>
 
+#include <filesystem>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -49,6 +51,16 @@ struct AnimCondition
     float threshold = 0.0f;
 };
 
+// Which transitions may fire while this transition itself is running (Unity's "Interruption Source").
+enum class AnimInterruption : int
+{
+    None = 0,             // the running transition always finishes (TheEngine's pre-3.0 behavior)
+    Current,              // transitions leaving the source state
+    Next,                 // transitions leaving the destination state
+    CurrentThenNext,      // source first, then destination (list order inside each group)
+    NextThenCurrent,      // destination first, then source
+};
+
 struct AnimTransition
 {
     std::string from;              // kAnyState for Any State transitions
@@ -57,6 +69,11 @@ struct AnimTransition
     float exitTime = 0.75f;        // normalized
     float duration = 0.25f;        // seconds
     std::vector<AnimCondition> conditions;
+    // Interruption of this transition while it plays (ignored once it has finished).
+    AnimInterruption interruption = AnimInterruption::None;
+    // Unity's "Ordered Interruption": candidates are checked in the order they are listed in the
+    // layer instead of Any State transitions first.
+    bool ordered = false;
 };
 
 enum class AnimLayerBlending : int { Override = 0, Additive };
@@ -69,7 +86,18 @@ struct AnimLayer
     std::string name = "Base Layer";
     float weight = 1.0f;
     AnimLayerBlending blending = AnimLayerBlending::Override;
-    std::vector<std::string> mask;  // bones whose subtrees this layer affects (empty = whole body)
+    std::vector<std::string> mask;  // inline bones whose subtrees this layer affects (empty = whole body)
+    // Blend mask asset (.mask) shared with other controllers. When assigned it replaces `mask`.
+    std::string maskAsset;
+    std::vector<std::string> maskAssetBones;          // resolved from maskAsset (not serialized)
+    bool maskAssetMissing = false;                    // resolved: the file could not be read
+    std::filesystem::file_time_type maskAssetStamp{}; // resolved: file time of maskAssetBones
+    // Bones this layer drives: the mask asset's list when one is assigned, otherwise its own list.
+    const std::vector<std::string>& EffectiveMask() const { return maskAsset.empty() ? mask : maskAssetBones; }
+    // Loads (or reloads) the .mask file behind maskAsset; returns true when the resolved bones changed.
+    bool RefreshMaskAsset();
+    // False when an assigned mask asset restricts the layer (even to an empty or unreadable list).
+    bool DrivesWholeBody() const;
     // Override layers: the mask's top bones take the layer's rotation in model space instead of relative to their
     // parent (Unreal's "mesh space rotation blend"), so an upper body keeps facing where its clip intends even
     // when the base layer turns the hips differently.
@@ -86,18 +114,37 @@ struct AnimLayer
     void RemoveState(const std::string& n);
 };
 
+// One problem the editor or the runtime found in a controller; `layer`, `state` and `transition` point
+// at the offending element of the layer (index, -1 = not applicable) so the Animator window can select it.
+struct AnimIssue
+{
+    int layer = -1;
+    int state = -1;
+    int transition = -1;
+    std::string text;
+};
+
 struct AnimatorController
 {
     static constexpr const char* kAnyState = AnimLayer::kAnyState;
+    // 1 = single layer, 2 = layers, 3 = interruption fields, 4 = layer blend mask asset
+    static constexpr int kCurrentVersion = 4;
 
     std::vector<AnimParam> params;
     std::vector<AnimLayer> layers{ AnimLayer{} }; // layer 0 is the base layer
 
     bool Load(const std::string& path);
+    bool Load(std::istream& in);
+    bool LoadString(const std::string& text);
     bool Save(const std::string& path) const;
+    bool Save(std::ostream& out) const;
+    std::string ToString() const; // serialized form (undo snapshots, editor state)
     static bool IsControllerFile(const std::string& path); // .controller written by TheEngine (Unity's YAML ones are skipped)
 
     int FindParam(const std::string& name) const;
+    // Problems worth showing in the editor: missing clips/parameters, broken transitions, unreachable
+    // states, empty blend trees, mask bones that are not in the rig. `clips` / `skeleton` may be null.
+    std::vector<AnimIssue> Validate(class ClipLibrary* clips, const Skeleton* skeleton) const;
     AnimLayer& Base() { return layers[0]; }
     const AnimLayer& Base() const { return layers[0]; }
 };
@@ -111,9 +158,13 @@ public:
 
     float GetParam(const std::string& name) const;
     bool SetParam(const std::string& name, float value); // triggers: value != 0 sets, 0 resets
+    // Exponential approach towards a target (Unity's damped SetFloat): dampTime <= 0 or dt <= 0 set directly.
+    bool SetParamDamped(const std::string& name, float target, float dampTime, float dt);
+    bool HasParam(const std::string& name) const { return m_Controller && m_Controller->FindParam(name) >= 0; }
     const std::vector<float>& Values() const { return m_Values; }
     float LayerWeight(int layer) const { return layer >= 0 && layer < static_cast<int>(m_Layers.size()) ? m_Layers[layer].weight : 0.0f; }
     void SetLayerWeight(int layer, float weight);
+    int LayerCount() const { return static_cast<int>(m_Layers.size()); }
 
     // Advances every layer and produces the combined pose (and the base layer's root motion when extracting).
     void Update(float dt, ClipLibrary& clips, const Skeleton& skeleton, bool extractRootMotion, Pose& pose, RootMotion& motion);
@@ -123,6 +174,8 @@ public:
     int CurrentState(int layer = 0) const { return Layer(layer).current; }
     int NextState(int layer = 0) const { return Layer(layer).next; }
     float CurrentNormalizedTime(int layer = 0) const { return Layer(layer).time; }
+    bool IsInTransition(int layer = 0) const { return Layer(layer).next >= 0; }
+    bool TransitionInterrupted(int layer = 0) const { return Layer(layer).frozen; }
     float TransitionProgress(int layer = 0) const
     {
         const LayerState& l = Layer(layer);
@@ -131,6 +184,12 @@ public:
     const AnimatorController* Controller() const { return m_Controller; }
 
 private:
+    struct MotionSource
+    {
+        int state = -1;
+        float time = 0.0f;  // normalized, advances while the blend is frozen
+        float base = 1.0f;  // weight inside the frozen blend (sources add up to 1)
+    };
     struct LayerState
     {
         int current = -1;
@@ -139,7 +198,13 @@ private:
         float nextTime = 0.0f;
         float elapsed = 0.0f;
         float duration = 0.0f;
+        int transition = -1;    // index of the running transition in the layer (-1 = none)
         float weight = 1.0f;
+        // Set after the running transition was interrupted: the interrupted blend stops progressing but
+        // keeps playing (states, times, weights) as the "from" side of the new transition, so there is no
+        // pose pop and the interrupted states keep contributing root motion.
+        bool frozen = false;
+        std::vector<MotionSource> sources;
         std::vector<uint8_t> mask; // per bone of the skeleton it was built for
         const Skeleton* maskSkeleton = nullptr;
     };
@@ -160,12 +225,17 @@ private:
     RootMotion StateMotion(const AnimState& state, float fromNormalized, float toNormalized, ClipLibrary& clips) const;
     bool ConditionsMet(const AnimTransition& t) const;
     void ConsumeTriggers(const AnimTransition& t);
+    // Index of the transition that starts this frame (-1 = none). While `ls` has a transition running only
+    // candidates its interruption source allows are considered; exit times are checked against the state
+    // each candidate leaves.
+    int FindTransition(const AnimLayer& layer, LayerState& ls, float curAfter, float nextAfter);
+    static bool ExitCrossed(const AnimState& state, float prev, float after, float exitTime);
     void UpdateLayer(int index, float dt, ClipLibrary& clips, const Skeleton& skeleton, bool extract, Pose& pose, RootMotion& motion);
     const std::vector<uint8_t>& Mask(int index, const Skeleton& skeleton);
 
     const AnimatorController* m_Controller = nullptr;
     std::vector<float> m_Values;
     std::vector<LayerState> m_Layers;
-    Pose m_PoseB, m_LayerPose, m_RefPose;
+    Pose m_PoseB, m_PoseC, m_LayerPose, m_RefPose;
     std::vector<glm::mat4> m_BaseModel, m_LayerModel;
 };

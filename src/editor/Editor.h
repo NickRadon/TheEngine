@@ -1,6 +1,7 @@
 #pragma once
 
 #include "anim/AnimationSystem.h"
+#include "anim/BlendMask.h"
 #include "editor/EditorCamera.h"
 #include "render/Resources.h"
 #include "render/SceneRenderer.h"
@@ -101,11 +102,28 @@ private:
     void DrawAnimator();
     void DrawAnimatorGraph(AnimatorController& c, AnimatorInstance* instance, ImVec2 size);
     void DrawAnimatorSelection(AnimatorController& c, AnimatorInstance* instance);
+    void DrawAnimatorStatus(AnimatorController& c, AnimatorInstance* instance, float width); // state / transition / time / warnings
     void OpenAnimatorController(const std::string& path);
     AnimatorController* EditedController();
     void SaveEditedController();
+    void MarkAnimEdited(); // an Animator window widget changed the controller (merges while dragging)
+    bool AnimUndo();       // controller undo/redo; these take Ctrl+Z while the Animator window has focus
+    bool AnimRedo();
+    bool AnimUndoAvailable() const;
+    bool AnimRedoAvailable() const;
     bool ClipField(const char* id, std::string& clip);
     const std::vector<std::string>& AnimationFiles();
+
+    // --- Blend mask window (EditorBlendMask.cpp) ---
+    void DrawBlendMaskWindow();
+    void OpenBlendMask(const std::string& path);
+    void SaveBlendMask();                  // writes m_Mask and re-reads it in every controller that uses it
+    const Skeleton* MaskSkeleton() const;  // skeleton the checkboxes are listed from (selection by default)
+
+    // --- Rig controls window (EditorRig.cpp) ---
+    void DrawRigWindow();
+    void OpenRig(const std::string& path);
+    void SaveRig();
 
     // --- Scene view helpers ---
     void SceneViewToolbar();
@@ -327,6 +345,18 @@ private:
     // Animator window
     std::string m_AnimCtrlPath;
     bool m_AnimCtrlDirty = false;
+    // Undo of the controller asset itself (scenes and controllers are separate undo histories).
+    struct AnimSnapshot
+    {
+        std::string path;
+        std::string text;
+    };
+    std::deque<AnimSnapshot> m_AnimUndo;
+    std::vector<AnimSnapshot> m_AnimRedo;
+    std::string m_AnimPreEdit;      // controller text from before the current edit stroke (undo entry)
+    bool m_AnimEditArmed = false;
+    bool m_AnimFocused = false;             // the Animator window has keyboard focus (Ctrl+Z goes there)
+    std::vector<AnimIssue> m_AnimIssues;    // validation of the open controller
     ImVec2 m_AnimPan{ 60.0f, 60.0f };
     float m_AnimZoom = 1.0f;
     std::string m_AnimSelState;
@@ -340,6 +370,16 @@ private:
     bool m_AnimFrameRequest = false;
     int m_AnimLayer = 0;
     bool m_AnimatorDocked = false;
+
+    // Blend mask window
+    std::string m_MaskPath;
+    BlendMask m_Mask;
+    bool m_FocusMask = false;
+    std::string m_RigPath;
+    char m_RigText[16384] = {};
+    bool m_RigDirty = false;
+    bool m_FocusRig = false;
+    char m_MaskAddBone[128] = {};
     ImGuiID m_SceneDockId = 0;
     std::vector<std::string> m_PendingDrops;
     std::string m_ScriptPreviewPath;
