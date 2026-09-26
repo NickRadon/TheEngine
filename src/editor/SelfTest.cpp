@@ -1693,6 +1693,9 @@ public class AnimApiDefaults : MonoBehaviour
                 if (!valid) return false;
                 const glm::vec3 position(weaponBone[3]);
                 const glm::vec3 forward = glm::normalize(-glm::vec3(weaponBone[2]));
+                if (pitch == 0.0f && yaw == 0.0f)
+                    t.Check(glm::dot(forward, glm::vec3(0.0f, 0.0f, -1.0f)) > 0.8f,
+                            "AE AK neutral weapon faces character forward (-Z)");
                 const float leftError = glm::length(glm::vec3(handL[3] - gripL[3]));
                 const float rightError = glm::length(glm::vec3(handR[3] - gripR[3]));
                 std::ofstream out(metricsPath, std::ios::app);
