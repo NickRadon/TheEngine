@@ -97,6 +97,31 @@ void AddNode(const char* command, const char* rest)
     g.selected = at;
 }
 ImU32 StageColor(int stage) { return stage == 0 ? IM_COL32(86, 167, 190, 255) : stage == 1 ? IM_COL32(204, 157, 83, 255) : IM_COL32(143, 184, 107, 255); }
+const char* FieldLabel(const RigLine& line, int index)
+{
+    const std::string& op = line.command;
+    if (index == 0) return op == "bone" ? "Helper bone name" : op == "twobone" ? "End bone (hand)" : "Target bone";
+    if (index == 1) return op == "bone" ? "Parent bone" : op == "twobone" ? "IK target bone" :
+                           (op == "precopy" || op == "copy") ? "Source bone" : "Space bone";
+    if (op == "twobone") return index == 2 ? "Pole / hint bone (optional)" : "IK weight";
+    if (op == "precopy" || op == "copy")
+    {
+        static const char* labels[] = { "Blend weight", "Copy position", "Copy rotation", "Copy scale" };
+        return index >= 2 && index <= 5 ? labels[index - 2] : "Parameter";
+    }
+    if (op == "bone" || op == "move" || op == "modify")
+    {
+        static const char* position[] = { "Position X (m)", "Position Y (m)", "Position Z (m)" };
+        if (index >= 2 && index <= 4) return position[index - 2];
+    }
+    if (op == "modify" && index == 9) return "Blend weight";
+    const int rotationStart = op == "bone" || op == "modify" ? 5 : 2;
+    static const char* rotation[] = { "Rotation X", "Rotation Y", "Rotation Z", "Rotation W" };
+    if (index >= rotationStart && index < rotationStart + 4) return rotation[index - rotationStart];
+    return "Parameter";
+}
+bool IsCopyFlag(const RigLine& line, int index)
+{ return (line.command == "copy" || line.command == "precopy") && index >= 3 && index <= 5; }
 }
 
 void Editor::OpenRig(const std::string& path)
@@ -236,14 +261,26 @@ void Editor::DrawRigWindow()
     {
         RigLine& line = g.lines[g.selected];
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(StageColor(Stage(line))), "%s", line.command.c_str());
-        const char* names[] = { "Bone", "Source / space", "Pole", "Value 1", "Value 2", "Value 3", "Value 4", "Value 5", "Value 6", "Value 7", "Value 8" };
+        ImGui::TextDisabled("Edit this control's inputs. Changes take effect after Save.");
         for (int i = 0; i < static_cast<int>(line.args.size()); ++i)
         {
             ImGui::PushID(i);
-            char value[256];
-            std::snprintf(value, sizeof(value), "%s", line.args[i].c_str());
-            const char* label = i < 11 ? names[i] : "Value";
-            if (ImGui::InputText(label, value, sizeof(value))) { line.args[i] = value; Rebuild(line); m_RigDirty = true; }
+            if (i == 2) ImGui::SeparatorText(line.command == "twobone" ? "IK settings" : "Transform / settings");
+            if (IsCopyFlag(line, i))
+            {
+                bool enabled = line.args[i] != "0";
+                if (ImGui::Checkbox(FieldLabel(line, i), &enabled))
+                { line.args[i] = enabled ? "1" : "0"; Rebuild(line); m_RigDirty = true; }
+            }
+            else
+            {
+                ImGui::TextUnformatted(FieldLabel(line, i));
+                char value[256];
+                std::snprintf(value, sizeof(value), "%s", line.args[i].c_str());
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::InputText("##value", value, sizeof(value)))
+                { line.args[i] = value; Rebuild(line); m_RigDirty = true; }
+            }
             ImGui::PopID();
         }
         if (ImGui::Button("Move up"))

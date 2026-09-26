@@ -1,5 +1,8 @@
 param(
-    [string]$ProjectRoot = 'C:\Users\nickr\Desktop\AnimationSetup'
+    [string]$ProjectRoot = 'C:\Users\nickr\Desktop\AnimationSetup',
+    [double]$CameraOffsetX = 0,
+    [double]$CameraOffsetY = 0,
+    [double]$CameraOffsetZ = 0
 )
 
 Set-StrictMode -Version Latest
@@ -121,6 +124,8 @@ entity 10 9 1 "AK Weapon Part 1"
   mesh 1 "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx#1" 1 1 1 0 0.5 "" 1
 '@
 Set-Content -LiteralPath (Join-Path $project 'Assets/Scenes/AK_Aiming.scene') -Value $scene -NoNewline
+& (Join-Path $PSScriptRoot 'Set-AkFirstPersonCamera.ps1') -ProjectRoot $project `
+    -CameraOffsetX $CameraOffsetX -CameraOffsetY $CameraOffsetY -CameraOffsetZ $CameraOffsetZ
 
 $settingsText = Get-Content -LiteralPath $settings -Raw
 $settingsText = $settingsText.Replace('lastScene "Assets/Scenes/AnimationSetup.scene"', 'lastScene "Assets/Scenes/AK_Aiming.scene"')

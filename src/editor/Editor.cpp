@@ -1244,6 +1244,21 @@ void Editor::RunPlaytest()
             }
             LOG_INFO("[playtest] t=%.2f %s pos (%.3f %.3f %.3f) yaw %.1f state %s fps %.0f", m_PlayTime, e.name.c_str(), pos.x, pos.y, pos.z,
                      e.transform.euler.y, state.c_str(), m_Fps);
+            glm::mat4 headBone(1.0f);
+            if (m_Animation.BoneModelMatrix(e.id, "head", headBone))
+            {
+                const glm::vec3 h(headBone[3]), x(headBone[0]), y(headBone[1]), z(headBone[2]);
+                LOG_INFO("[playtest] head pos (%.3f %.3f %.3f) axes X(%.3f %.3f %.3f) Y(%.3f %.3f %.3f) Z(%.3f %.3f %.3f)",
+                         h.x, h.y, h.z, x.x, x.y, x.z, y.x, y.y, y.z, z.x, z.y, z.z);
+            }
+            for (const Entity& camera : m_Scene.entities) if (camera.camera.enabled)
+            {
+                const glm::mat4 cameraWorld = m_Scene.WorldMatrix(camera.id);
+                const glm::vec3 cameraPos(cameraWorld[3]);
+                const glm::vec3 forward = glm::normalize(-glm::vec3(cameraWorld[2]));
+                LOG_INFO("[playtest] camera pos (%.3f %.3f %.3f) forward (%.3f %.3f %.3f)",
+                         cameraPos.x, cameraPos.y, cameraPos.z, forward.x, forward.y, forward.z);
+            }
             glm::mat4 weaponBone(1.0f);
             if (m_Animation.BoneModelMatrix(e.id, "vb_ak_weapon", weaponBone))
             {

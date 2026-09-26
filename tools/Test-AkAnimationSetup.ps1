@@ -12,6 +12,13 @@ $project = (Resolve-Path -LiteralPath $ProjectRoot).Path
 if (-not (Test-Path -LiteralPath (Join-Path $project 'Assets/Scenes/AK_Aiming.scene'))) {
     throw 'AnimationSetup AK_Aiming.scene is missing. Run Install-AkAnimationSetup.ps1 first.'
 }
+$sceneText = Get-Content -LiteralPath (Join-Path $project 'Assets/Scenes/AK_Aiming.scene') -Raw
+if (-not $sceneText.Contains('entity 1 11 1 "Main Camera"') -or
+    -not $sceneText.Contains('entity 11 4 1 "Head Camera Anchor"') -or
+    -not $sceneText.Contains('socket 1 "head"') -or
+    $sceneText.Contains('script 1 "ThirdPersonCamera"')) {
+    throw 'AK scene camera is not a child of the head-mounted first-person anchor.'
+}
 $controllerText = Get-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Aim.controller') -Raw
 $maskText = Get-Content -LiteralPath (Join-Path $project 'Assets/AK/Masks/UpperBody.mask') -Raw
 if (-not $controllerText.Contains('layer "Base Layer" 1 override') -or
@@ -57,6 +64,9 @@ foreach ($case in @(
         ForEach-Object { foreach ($match in $_.Matches) { [double]::Parse($match.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) } })
     if ($errors.Count -eq 0 -or ($errors | Measure-Object -Maximum).Maximum -gt 0.005) {
         throw "$($case.name): a hand missed its AK grip by more than 5 mm."
+    }
+    if (-not ($lines | Select-String -SimpleMatch '[playtest] camera pos')) {
+        throw "$($case.name): no first-person camera transform was reported."
     }
     $source = Join-Path $capture 'play_03.bmp'
     if (-not (Test-Path -LiteralPath $source)) { throw "$($case.name): the visual capture is missing." }
