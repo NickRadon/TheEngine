@@ -6,6 +6,8 @@ A TheEngine project is a directory with `Assets/`, `Library/` and `ProjectSettin
 
 `C:\Users\nickr\Desktop\AnimationSetup` is the editor project for the AK work. It opens `Assets/Scenes/AK_Aiming.scene`, which assigns `Assets/AK/Rigs/AE_AK.rig` and `Assets/Animators/AK_Aim.controller` to the Quantum player, sockets the AE AK weapon to `vb_ak_weapon`, and uses `AKAimController.cs` for spine look. Hold right mouse and move the mouse, or use I/J/K/L to aim up/left/down/right. The original `Assets/Scenes/AnimationSetup.scene`, `Player.controller` and `PlayerController.cs` remain available for locomotion. Run `tools/Install-AkAnimationSetup.ps1` from the engine repository to recreate the AK scene and assets in this project.
 
+The AK rig rotates the left clavicle forward before Two Bone IK so the authored support-hand grip remains within arm reach. Its `twobone` controls solve both arms; keep the Animator's older `handIk` option disabled in this scene, or that second pass will pull the hands away from the weapon when the spine aims.
+
 ## Asset types and references
 
 The Project window shows files in `Assets/`, supports search, import, rename, drag-to-move and thumbnail previews. Mesh references use a built-in primitive name or `Assets/.../model.ext#<mesh index>`. Materials use `.mat`; scenes use `.scene`; prefabs use `.prefab`; TheEngine Animator Controllers use `.controller`. These text formats are engine-specific even when their names resemble Unity assets.

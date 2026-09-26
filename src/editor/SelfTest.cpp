@@ -1702,6 +1702,8 @@ public class AnimApiDefaults : MonoBehaviour
                 }
                 const float leftError = glm::length(glm::vec3(handL[3] - gripL[3]));
                 const float rightError = glm::length(glm::vec3(handR[3] - gripR[3]));
+                t.Check(leftError < 0.005f && rightError < 0.005f,
+                        "AE AK hands stay on weapon grips after rig IK");
                 std::ofstream out(metricsPath, std::ios::app);
                 out << name << ',' << pitch << ',' << yaw << ',' << position.x << ',' << position.y << ',' << position.z << ','
                     << forward.x << ',' << forward.y << ',' << forward.z << ',' << leftError << ',' << rightError << '\n';

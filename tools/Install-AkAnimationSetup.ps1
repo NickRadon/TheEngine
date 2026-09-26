@@ -77,7 +77,7 @@ Set-Content -LiteralPath (Join-Path $project 'Assets/Scripts/AKAimController.cs'
 $scene = Get-Content -LiteralPath $sourceScene -Raw
 $scene = $scene.Replace('name "AnimationSetup"', 'name "AK Aiming"')
 $scene = $scene.Replace('animator 1 "Assets/Animators/Player.controller" 1',
-    'animator 1 "Assets/Animators/AK_Aim.controller" 0 "spine_01,spine_02,spine_03,spine_04,spine_05,neck_01,head" 1 "Assets/AK/Rigs/AE_AK.rig" 1')
+    'animator 1 "Assets/Animators/AK_Aim.controller" 0 "spine_01,spine_02,spine_03,spine_04,spine_05,neck_01,head" 0 "Assets/AK/Rigs/AE_AK.rig" 1')
 $scene = $scene.Replace('script 1 "PlayerController"', 'script 1 "AKAimController"')
 $scene += @'
 entity 9 4 1 "AK Weapon"

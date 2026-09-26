@@ -1249,6 +1249,20 @@ void Editor::RunPlaytest()
             {
                 const glm::vec3 forward = glm::normalize(-glm::vec3(weaponBone[2]));
                 LOG_INFO("[playtest] weapon forward (%.3f %.3f %.3f)", forward.x, forward.y, forward.z);
+                for (const char* side : { "l", "r" })
+                {
+                    glm::mat4 upper(1.0f), lower(1.0f), hand(1.0f), grip(1.0f);
+                    const std::string suffix(side);
+                    if (!m_Animation.BoneModelMatrix(e.id, "upperarm_" + suffix, upper) ||
+                        !m_Animation.BoneModelMatrix(e.id, "lowerarm_" + suffix, lower) ||
+                        !m_Animation.BoneModelMatrix(e.id, "hand_" + suffix, hand) ||
+                        !m_Animation.BoneModelMatrix(e.id, "vb_ak_hand_" + suffix, grip)) continue;
+                    const glm::vec3 a(upper[3]), b(lower[3]), c(hand[3]), target(grip[3]);
+                    const float reach = glm::length(b - a) + glm::length(c - b);
+                    const float desired = glm::length(target - a);
+                    LOG_INFO("[playtest] %s arm target %.3f m / reach %.3f m, hand error %.3f m",
+                             side, desired, reach, glm::length(c - target));
+                }
             }
         }
         if (!p.captureDir.empty() && m_Renderer->HasTarget(SceneRenderer::GameViewId) && m_PlayTime > 0.0f)

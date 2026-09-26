@@ -13,5 +13,8 @@ prerotate "vb_ak_weapon" "vb_ak_weapon" 0 0.7071068 0.7071068 0
 precopy "vb_ak_hand_l" "ik_hand_l" 1 1 1 1
 precopy "vb_ak_hand_r" "ik_hand_r" 1 1 1 1
 # The inherited head rotation carries the weapon and grips; then solve the arms.
+# The authored off-hand grip is just beyond the FK arm's reach. Roll the left
+# clavicle forward about the upper spine so the shoulder can follow the rifle.
+modify "clavicle_l" "spine_05" 0 0 0 -0.16844 -0.04220 0 0.9848078 1
 twobone "hand_l" "vb_ak_hand_l" "" 1
 twobone "hand_r" "vb_ak_hand_r" "" 1
