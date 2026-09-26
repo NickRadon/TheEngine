@@ -88,7 +88,8 @@ int main(int argc, char** argv)
             // Unity KeyCode names or numbers, comma separated (e.g. W,LeftShift). --press entries take a start time
             // in seconds (e.g. C@1.5,Space@3) and are tapped for 0.1 s so scripts see GetKeyDown/GetKeyUp.
             static const std::pair<const char*, int> names[] = { { "W", 119 }, { "A", 97 }, { "S", 115 }, { "D", 100 }, { "Q", 113 },
-                { "E", 101 }, { "C", 99 }, { "F", 102 }, { "I", 105 }, { "M", 109 }, { "R", 114 }, { "V", 118 }, { "Space", 32 },
+                { "E", 101 }, { "C", 99 }, { "F", 102 }, { "I", 105 }, { "J", 106 }, { "K", 107 }, { "L", 108 },
+                { "M", 109 }, { "R", 114 }, { "V", 118 }, { "Space", 32 },
                 { "LeftShift", 304 }, { "LeftControl", 306 }, { "Mouse0", 323 }, { "Mouse1", 324 }, { "Mouse2", 325 },
                 { "Mouse3", 326 }, { "Mouse4", 327 } };
             const bool press = arg == "--press";

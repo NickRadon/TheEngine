@@ -1244,12 +1244,23 @@ void Editor::RunPlaytest()
             }
             LOG_INFO("[playtest] t=%.2f %s pos (%.3f %.3f %.3f) yaw %.1f state %s fps %.0f", m_PlayTime, e.name.c_str(), pos.x, pos.y, pos.z,
                      e.transform.euler.y, state.c_str(), m_Fps);
+            glm::mat4 weaponBone(1.0f);
+            if (m_Animation.BoneModelMatrix(e.id, "vb_ak_weapon", weaponBone))
+            {
+                const glm::vec3 forward = glm::normalize(-glm::vec3(weaponBone[2]));
+                LOG_INFO("[playtest] weapon forward (%.3f %.3f %.3f)", forward.x, forward.y, forward.z);
+            }
         }
         if (!p.captureDir.empty() && m_Renderer->HasTarget(SceneRenderer::GameViewId) && m_PlayTime > 0.0f)
         {
             char name[64];
             std::snprintf(name, sizeof(name), "/play_%02d.bmp", p.captures++);
             m_Renderer->CaptureView(SceneRenderer::GameViewId, p.captureDir + name);
+            if (m_Renderer->HasTarget(SceneRenderer::SceneViewId))
+            {
+                std::snprintf(name, sizeof(name), "/scene_play_%02d.bmp", p.captures - 1);
+                m_Renderer->CaptureView(SceneRenderer::SceneViewId, p.captureDir + name);
+            }
         }
         // Live Animator window (state progress) shortly before the end.
         if (!p.captureDir.empty() && m_PlayTime + 0.6f >= p.seconds && m_PlayTime + 0.1f < p.seconds) m_FocusAnimator = true;

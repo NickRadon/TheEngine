@@ -4,7 +4,7 @@
 
 A TheEngine project is a directory with `Assets/`, `Library/` and `ProjectSettings/ProjectSettings.txt`. `Assets/` is user content; `Library/` holds generated script assemblies and caches and can be regenerated. The settings file stores the project name, engine version and last scene. The launcher can create Sample 3D or Empty 3D projects, open existing projects and maintain a recent-project list in the user's app-data directory. `TheEngine.exe --project <folder>` opens one directly.
 
-The clean `C:\Users\nickr\Desktop\AnimationSetup` project uses `Assets/Scenes/AnimationSetup.scene`. Its authored scene, `Player.controller`, `PlayerController.cs` and `ThirdPersonCamera.cs` form the original setup. Character, Locomotion, AK, Materials and Textures are imported source assets. Imported AK files do not imply an AK gameplay system is active in this scene.
+`C:\Users\nickr\Desktop\AnimationSetup` is the editor project for the AK work. It opens `Assets/Scenes/AK_Aiming.scene`, which assigns `Assets/AK/Rigs/AE_AK.rig` and `Assets/Animators/AK_Aim.controller` to the Quantum player, sockets the AE AK weapon to `vb_ak_weapon`, and uses `AKAimController.cs` for spine look. Hold right mouse and move the mouse, or use I/J/K/L to aim up/left/down/right. The original `Assets/Scenes/AnimationSetup.scene`, `Player.controller` and `PlayerController.cs` remain available for locomotion. Run `tools/Install-AkAnimationSetup.ps1` from the engine repository to recreate the AK scene and assets in this project.
 
 ## Asset types and references
 
