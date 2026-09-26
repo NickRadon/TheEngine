@@ -162,9 +162,10 @@ void Editor::DrawRigWindow()
     const ImVec2 size = ImGui::GetContentRegionAvail();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(29, 34, 42, 255));
-    ImGui::InvisibleButton("graph background", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) { g.pan.x += ImGui::GetIO().MouseDelta.x; g.pan.y += ImGui::GetIO().MouseDelta.y; }
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) g.selected = -1;
+    // A canvas-sized item would overlap every node and win ImGui's hit test.
+    // Use the child window for background gestures; nodes below own their hit boxes.
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle))
+    { g.pan.x += ImGui::GetIO().MouseDelta.x; g.pan.y += ImGui::GetIO().MouseDelta.y; }
     draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
     for (float x = origin.x + std::fmod(g.pan.x, 32.0f); x < origin.x + size.x; x += 32.0f)
         draw->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + size.y), IM_COL32(44, 50, 60, 255));
