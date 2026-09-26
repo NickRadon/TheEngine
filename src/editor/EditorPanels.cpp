@@ -30,6 +30,8 @@ namespace
     Icon EntityIcon(const Entity& e)
     {
         if (e.camera.enabled) return Icon::Camera;
+        if (e.reflectionProbe.enabled) return Icon::Sky;
+        if (e.volume.enabled) return Icon::Gizmos;
         if (e.light.enabled) return Icon::Sun;
         if (e.meshRenderer.enabled) return Icon::Cube;
         return Icon::Empty;
@@ -65,6 +67,14 @@ void Editor::EntityMenuItems(EntityId parent)
         if (ImGui::MenuItem("Directional Light")) CreateEntity("Directional Light", parent);
         if (ImGui::MenuItem("Point Light")) CreateEntity("Point Light", parent);
         if (ImGui::MenuItem("Spot Light")) CreateEntity("Spot Light", parent);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reflection Probe")) CreateEntity("Reflection Probe", parent);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Volume"))
+    {
+        if (ImGui::MenuItem("Global Volume")) CreateEntity("Global Volume", parent);
+        if (ImGui::MenuItem("Box Volume")) CreateEntity("Box Volume", parent);
         ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Camera")) CreateEntity("Camera", parent);
@@ -610,22 +620,23 @@ void Editor::DrawInspector()
             if (ImGui::ColorEdit3("##color", glm::value_ptr(l.color))) MarkEdited();
             EditorUI::PropertyLabel("Intensity");
             if (ImGui::DragFloat("##intensity", &l.intensity, 0.01f, 0.0f, 100.0f)) MarkEdited();
-            if (l.type == LightType::Directional)
+            EditorUI::PropertyLabel("Shadow Type");
+            int shadowType = l.castShadows ? 1 : 0;
+            if (ImGui::Combo("##shadowType", &shadowType, "No Shadows\0Soft Shadows\0"))
             {
-                EditorUI::PropertyLabel("Shadow Type");
-                int shadowType = l.castShadows ? 1 : 0;
-                if (ImGui::Combo("##shadowType", &shadowType, "No Shadows\0Soft Shadows\0"))
-                {
-                    MarkEdited();
-                    l.castShadows = shadowType == 1;
-                }
-                if (l.castShadows)
-                {
-                    EditorUI::PropertyLabel("Strength");
-                    if (ImGui::SliderFloat("##shadowStrength", &l.shadowStrength, 0.0f, 1.0f)) MarkEdited();
-                }
-                ImGui::TextDisabled("The first directional light drives the procedural sky's sun.");
+                MarkEdited();
+                l.castShadows = shadowType == 1;
             }
+            if (l.castShadows)
+            {
+                EditorUI::PropertyLabel("Strength");
+                if (ImGui::SliderFloat("##shadowStrength", &l.shadowStrength, 0.0f, 1.0f)) MarkEdited();
+            }
+            if (l.type == LightType::Directional)
+                ImGui::TextDisabled("The first directional light drives the procedural sky's sun.");
+            else if (l.castShadows)
+                ImGui::TextDisabled(l.type == LightType::Point ? "Point light shadows use 6 of the 24 shadow layers."
+                                                               : "Spot light shadows use 1 of the 24 shadow layers.");
             ImGui::Spacing();
         }
         if (remove)
@@ -755,6 +766,126 @@ void Editor::DrawInspector()
         }
     }
 
+    // Reflection Probe
+    if (e->reflectionProbe.enabled)
+    {
+        bool remove = false;
+        if (EditorUI::ComponentHeader("Reflection Probe", Icon::Sky, nullptr, &remove))
+        {
+            ReflectionProbeComponent& p = e->reflectionProbe;
+            if (EditorUI::Vec3Field("Box Size", glm::value_ptr(p.size), 0.05f, 10.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Box Projection");
+            if (ImGui::Checkbox("##boxProjection", &p.boxProjection)) MarkEdited();
+            EditorUI::PropertyLabel("Intensity");
+            if (ImGui::DragFloat("##probeIntensity", &p.intensity, 0.01f, 0.0f, 10.0f)) MarkEdited();
+            EditorUI::PropertyLabel("");
+            if (ImGui::Button("Bake")) m_ProbeSignatures.erase(e->id);
+            ImGui::SameLine();
+            ImGui::TextDisabled(m_Renderer->IsProbeBaked(e->id) ? "Baked (updates automatically)" : "Not baked yet");
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->reflectionProbe.enabled = false;
+        }
+    }
+
+    // Volume (post-processing)
+    if (e->volume.enabled)
+    {
+        bool remove = false;
+        if (EditorUI::ComponentHeader("Volume", Icon::Gizmos, nullptr, &remove))
+        {
+            VolumeComponent& v = e->volume;
+            EditorUI::PropertyLabel("Mode");
+            int mode = v.isGlobal ? 0 : 1;
+            if (ImGui::Combo("##volumeMode", &mode, "Global\0Local\0")) { MarkEdited(); v.isGlobal = mode == 0; }
+            if (!v.isGlobal)
+            {
+                if (EditorUI::Vec3Field("Box Size", glm::value_ptr(v.size), 0.05f, 10.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Blend Distance");
+                if (ImGui::DragFloat("##blend", &v.blendDistance, 0.05f, 0.0f, 1000.0f)) MarkEdited();
+            }
+            EditorUI::PropertyLabel("Weight");
+            if (ImGui::SliderFloat("##weight", &v.weight, 0.0f, 1.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Priority");
+            if (ImGui::DragFloat("##priority", &v.priority, 0.1f)) MarkEdited();
+
+            PostProcessSettings& s = v.settings;
+            auto group = [&](const char* name, bool& active) {
+                ImGui::Spacing();
+                ImGui::PushID(name);
+                if (ImGui::Checkbox("##active", &active)) MarkEdited();
+                ImGui::SameLine();
+                const bool open = ImGui::TreeNodeEx(name, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+                ImGui::PopID();
+                if (open && !active) ImGui::BeginDisabled();
+                return open;
+            };
+            auto endGroup = [&](bool open, bool active) {
+                if (!open) return;
+                if (!active) ImGui::EndDisabled();
+                ImGui::TreePop();
+            };
+            ImGui::SeparatorText("Overrides");
+            if (bool open = group("Bloom", s.bloom))
+            {
+                EditorUI::PropertyLabel("Threshold");
+                if (ImGui::DragFloat("##bThreshold", &s.bloomThreshold, 0.01f, 0.0f, 10.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Intensity");
+                if (ImGui::DragFloat("##bIntensity", &s.bloomIntensity, 0.01f, 0.0f, 10.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Scatter");
+                if (ImGui::SliderFloat("##bScatter", &s.bloomScatter, 0.0f, 1.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Tint");
+                if (ImGui::ColorEdit3("##bTint", glm::value_ptr(s.bloomTint))) MarkEdited();
+                endGroup(open, s.bloom);
+            }
+            if (bool open = group("Color Adjustments", s.colorAdjustments))
+            {
+                EditorUI::PropertyLabel("Post Exposure");
+                if (ImGui::DragFloat("##postExposure", &s.postExposure, 0.01f, -10.0f, 10.0f, "%.2f EV")) MarkEdited();
+                EditorUI::PropertyLabel("Contrast");
+                if (ImGui::SliderFloat("##contrast", &s.contrast, -100.0f, 100.0f, "%.0f")) MarkEdited();
+                EditorUI::PropertyLabel("Color Filter");
+                if (ImGui::ColorEdit3("##filter", glm::value_ptr(s.colorFilter))) MarkEdited();
+                EditorUI::PropertyLabel("Saturation");
+                if (ImGui::SliderFloat("##saturation", &s.saturation, -100.0f, 100.0f, "%.0f")) MarkEdited();
+                endGroup(open, s.colorAdjustments);
+            }
+            if (bool open = group("White Balance", s.whiteBalance))
+            {
+                EditorUI::PropertyLabel("Temperature");
+                if (ImGui::SliderFloat("##temperature", &s.temperature, -100.0f, 100.0f, "%.0f")) MarkEdited();
+                EditorUI::PropertyLabel("Tint");
+                if (ImGui::SliderFloat("##tint", &s.tint, -100.0f, 100.0f, "%.0f")) MarkEdited();
+                endGroup(open, s.whiteBalance);
+            }
+            if (bool open = group("Vignette", s.vignette))
+            {
+                EditorUI::PropertyLabel("Color");
+                if (ImGui::ColorEdit3("##vColor", glm::value_ptr(s.vignetteColor))) MarkEdited();
+                EditorUI::PropertyLabel("Intensity");
+                if (ImGui::SliderFloat("##vIntensity", &s.vignetteIntensity, 0.0f, 1.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Smoothness");
+                if (ImGui::SliderFloat("##vSmooth", &s.vignetteSmoothness, 0.01f, 1.0f)) MarkEdited();
+                endGroup(open, s.vignette);
+            }
+            if (bool open = group("Tonemapping", s.tonemapping))
+            {
+                EditorUI::PropertyLabel("Mode");
+                if (ImGui::Combo("##tonemapper", &s.tonemapper, "None\0ACES\0Neutral\0")) MarkEdited();
+                endGroup(open, s.tonemapping);
+            }
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->volume.enabled = false;
+        }
+    }
+
     // C# scripts
     for (size_t i = 0; i < e->scripts.size(); ++i)
     {
@@ -792,6 +923,8 @@ void Editor::DrawInspector()
             { "Mesh Renderer", &e->meshRenderer.enabled },
             { "Light", &e->light.enabled },
             { "Camera", &e->camera.enabled },
+            { "Reflection Probe", &e->reflectionProbe.enabled },
+            { "Volume", &e->volume.enabled },
         };
         for (const Item& item : items)
         {
@@ -955,6 +1088,7 @@ void Editor::DrawLighting()
         slider("Exposure", "##exposure", &s.exposure, 0.0f, 8.0f, "%.2f");
         slider("Ambient Intensity", "##ambient", &s.ambientIntensity, 0.0f, 4.0f, "%.2f");
         slider("Shadow Distance", "##shadowDistance", &s.shadowDistance, 0.0f, 500.0f, "%.0f m");
+        slider("Reflection Intensity", "##reflections", &s.reflectionIntensity, 0.0f, 2.0f, "%.2f");
         ImGui::Spacing();
     }
 

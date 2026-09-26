@@ -91,6 +91,56 @@ struct ColliderComponent
     float bounciness = 0.0f;
 };
 
+// Unity: Reflection Probe. Captures the scene around it into a cube map used for reflections inside its box.
+struct ReflectionProbeComponent
+{
+    bool enabled = false;
+    glm::vec3 size{ 10.0f };     // box (world units, centered on the object)
+    bool boxProjection = false;  // parallax-correct reflections against the box (good for rooms)
+    float intensity = 1.0f;
+};
+
+// Post-processing parameters (a subset of Unity URP's volume overrides). Each group is only applied by a volume
+// that overrides it; values blend from the neutral defaults.
+struct PostProcessSettings
+{
+    bool bloom = false;
+    float bloomIntensity = 1.0f;
+    float bloomThreshold = 0.9f;
+    float bloomScatter = 0.7f;
+    glm::vec3 bloomTint{ 1.0f };
+
+    bool colorAdjustments = false;
+    float postExposure = 0.0f;   // EV
+    float contrast = 0.0f;       // -100..100
+    float saturation = 0.0f;     // -100..100
+    glm::vec3 colorFilter{ 1.0f };
+
+    bool whiteBalance = false;
+    float temperature = 0.0f;    // -100..100
+    float tint = 0.0f;           // -100..100
+
+    bool vignette = false;
+    float vignetteIntensity = 0.25f;
+    float vignetteSmoothness = 0.4f;
+    glm::vec3 vignetteColor{ 0.0f };
+
+    bool tonemapping = false;
+    int tonemapper = 1;          // 0 None, 1 ACES, 2 Neutral
+};
+
+// Unity: Volume. Global volumes apply everywhere; local ones inside their box (fading over blendDistance).
+struct VolumeComponent
+{
+    bool enabled = false;
+    bool isGlobal = true;
+    glm::vec3 size{ 10.0f };
+    float blendDistance = 0.0f;
+    float weight = 1.0f;
+    float priority = 0.0f;
+    PostProcessSettings settings;
+};
+
 // A C# script attached to an entity (Unity: a MonoBehaviour component). Public field values are stored as
 // text so they survive script recompiles; the scripting layer converts them to/from managed values.
 struct ScriptField
@@ -122,6 +172,8 @@ struct Entity
     std::vector<ScriptComponent> scripts;
     RigidbodyComponent rigidbody;
     ColliderComponent collider;
+    ReflectionProbeComponent reflectionProbe;
+    VolumeComponent volume;
 
     // Prefab link: every entity of an instance has the local id it has inside the prefab; the instance root also
     // stores the prefab path. prefabOverrides lists properties ("key:index") that differ from the prefab.
@@ -168,6 +220,7 @@ struct SkySettings
     bool ssao = true;                                 // screen-space ambient occlusion
     float ssaoRadius = 1.0f;
     float ssaoIntensity = 2.0f;
+    float reflectionIntensity = 1.0f;                 // sky reflections (Unity: Environment Reflections > Intensity Multiplier)
 };
 
 class Scene
@@ -197,6 +250,9 @@ public:
     EntityId Duplicate(EntityId id);                // deep copy, returns new root
 
     void CreateDefault(); // Main Camera + Directional Light + a few primitives
+
+    // Post-processing at a camera position: all enabled volumes blended by priority, weight and distance.
+    PostProcessSettings ResolvePostProcess(const glm::vec3& cameraPos) const;
 
     EntityId NextId() const { return m_NextId; }
     void RecalculateNextId(); // after replacing entities directly

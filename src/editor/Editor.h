@@ -262,6 +262,9 @@ private:
     char m_ProjectSearch[128] = {};
     float m_AssetScanTimer = 0.0f;
     std::map<std::string, std::filesystem::file_time_type> m_ScriptStamps;
+    std::map<EntityId, std::string> m_ProbeSignatures; // what each reflection probe was last baked with
+    void UpdateReflectionProbes(VkCommandBuffer cmd, float time);
+    void ResetReflectionProbes();
 
     // Prefabs
     std::map<std::string, Prefab::Contents> m_PrefabCache;

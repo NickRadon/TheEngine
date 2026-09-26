@@ -257,6 +257,7 @@ bool VulkanContext::CreateDevice()
     f2.pNext = &f13;
     f2.features.fillModeNonSolid = m_SupportsWireframe ? VK_TRUE : VK_FALSE;
     f2.features.samplerAnisotropy = m_MaxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
+    f2.features.imageCubeArray = VK_TRUE; // reflection probes live in one cube map array
 
     const char* extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
     VkDeviceCreateInfo info{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
@@ -491,7 +492,7 @@ uint32_t VulkanContext::FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags 
 }
 
 GpuImage VulkanContext::CreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                                     VkSampleCountFlagBits samples, uint32_t layers, uint32_t mipLevels)
+                                     VkSampleCountFlagBits samples, uint32_t layers, uint32_t mipLevels, bool cube)
 {
     GpuImage img;
     img.format = format;
@@ -508,6 +509,7 @@ GpuImage VulkanContext::CreateImage(uint32_t width, uint32_t height, VkFormat fo
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = usage;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (cube) info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VK_CHECK(vkCreateImage(m_Device, &info, nullptr, &img.image));
 
     VkMemoryRequirements req;
@@ -520,11 +522,24 @@ GpuImage VulkanContext::CreateImage(uint32_t width, uint32_t height, VkFormat fo
 
     VkImageViewCreateInfo view{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
     view.image = img.image;
-    view.viewType = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    view.viewType = cube ? (layers > 6 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE)
+                         : layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     view.format = format;
     view.subresourceRange = { aspect, 0, mipLevels, 0, layers };
     VK_CHECK(vkCreateImageView(m_Device, &view, nullptr, &img.view));
     return img;
+}
+
+VkImageView VulkanContext::CreateSubView(const GpuImage& image, uint32_t layer, uint32_t mip, VkImageAspectFlags aspect)
+{
+    VkImageViewCreateInfo view{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    view.image = image.image;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = image.format;
+    view.subresourceRange = { aspect, mip, 1, layer, 1 };
+    VkImageView result = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateImageView(m_Device, &view, nullptr, &result));
+    return result;
 }
 
 VkImageView VulkanContext::CreateLayerView(const GpuImage& image, uint32_t layer, VkImageAspectFlags aspect)
@@ -659,7 +674,7 @@ void VulkanContext::ImageBarrier(VkCommandBuffer cmd, VkImage image, VkImageAspe
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange = { aspect, 0, 1, 0, VK_REMAINING_ARRAY_LAYERS };
+    barrier.subresourceRange = { aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
 
     VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
     dep.imageMemoryBarrierCount = 1;

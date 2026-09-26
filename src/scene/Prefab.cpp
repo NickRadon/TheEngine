@@ -58,8 +58,8 @@ namespace
     // Sort key that keeps each script's fields right after it.
     std::pair<int, int> Rank(const std::string& key)
     {
-        static const char* fixed[] = { "object", "transform", "mesh", "light", "camera", "rigidbody", "collider" };
-        for (int i = 0; i < 7; ++i)
+        static const char* fixed[] = { "object", "transform", "mesh", "light", "camera", "rigidbody", "collider", "probe", "volume" };
+        for (int i = 0; i < 9; ++i)
             if (key == fixed[i]) return { i, 0 };
         if (key.rfind("script#", 0) == 0) return { 100 + 2 * std::atoi(key.c_str() + 7), 0 };
         if (key.rfind("field#", 0) == 0) return { 100 + 2 * std::atoi(key.c_str() + 6), 1 };
@@ -373,6 +373,8 @@ namespace Prefab
                 else if (key == "camera") name = "Camera";
                 else if (key == "rigidbody") name = "Rigidbody";
                 else if (key == "collider") name = "Collider";
+                else if (key == "probe") name = "Reflection Probe";
+                else if (key == "volume") name = "Volume";
                 else if (key.rfind("script#", 0) == 0 || key.rfind("field#", 0) == 0)
                 {
                     const size_t index = static_cast<size_t>(std::atoi(key.c_str() + key.find('#') + 1));

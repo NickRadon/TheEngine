@@ -7,7 +7,9 @@ A small Unity-style game engine/editor written in C++20:
 - **Gizmos:** ImGuizmo (move/rotate/scale/rect/transform + scene orientation gizmo)
 - **Animation:** ImAnim (tool button transitions, persp/iso blend, play-mode tint, toasts, time-of-day presets, launcher pages)
 - **Sky:** procedural atmosphere (Rayleigh/Mie single scattering), sun disk, clouds, stars, and ambient lighting derived from the sky
-- **Lighting:** PBR (GGX) shading, directional/point/spot lights (up to 32), 4-cascade soft sun shadows (stabilized, 16-tap PCF), SSAO, 4x MSAA, ACES tonemapping
+- **Lighting:** PBR (GGX) shading, directional/point/spot lights (up to 32), 4-cascade soft sun shadows (stabilized, 16-tap PCF), point/spot light shadows (cube and perspective shadow maps), SSAO, 4x MSAA
+- **Reflections:** the sky is captured into a GGX-prefiltered cube map; Reflection Probes capture the scene (optionally box-projected) and re-bake automatically when moved or when the lighting changes
+- **Post-processing:** Unity-style Volumes (global or local with blend distance and priority): bloom, color adjustments, white balance, vignette, and ACES/Neutral tonemapping
 - **Materials:** `.mat` assets with albedo/normal/mask textures, tiling and emission; textures are mipmapped and hot-reloaded when changed on disk
 - **Models:** glTF 2.0 (`.gltf` / `.glb`) import via cgltf; node hierarchy, meshes, materials and embedded images are brought in
 - **Scripting:** C# like Unity (`MonoBehaviour`, `Start`/`Update`/`FixedUpdate`, `transform`, `Input`, `Time`, `Debug.Log`, `Instantiate`, serialized fields in the Inspector), hosted on .NET through hostfxr
@@ -56,6 +58,12 @@ public class Rotator : MonoBehaviour
 ```
 
 Saving a script triggers a background `dotnet build` into `Library/ScriptAssemblies`. Errors appear in the Console with file and line, and they block Play mode until they're fixed. Public (or `[SerializeField]`) fields show up in the Inspector. Changes made during Play mode are reloaded when you stop.
+
+## Lighting, reflections and post-processing
+
+- **Light shadows:** every light has a *Shadow Type* setting. Point lights use 6 shadow layers (cube faces) and spot lights use 1, out of 24 per view.
+- **Reflection probes:** add one from *GameObject > Light > Reflection Probe* and size its box. Shiny surfaces inside the box reflect what the probe sees, and everything else reflects the sky. Turn on *Box Projection* for rooms. *Lighting > Reflection Intensity* scales the sky reflections.
+- **Volumes:** add one from *GameObject > Volume > Global Volume* (or *Box Volume*) and enable the override groups you want. Volumes blend by priority, weight and, for box volumes, the camera's distance. The Scene view's skybox button also toggles post-processing, like Unity's effects toggle.
 
 ## Physics
 

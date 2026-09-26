@@ -282,7 +282,91 @@ void Scene::CreateDefault()
         lamp.light.range = 6.0f;
         lamp.transform.position = { 1.2f, 1.2f, 1.6f };
     }
+    {
+        Entity& volume = Create("Global Volume");
+        volume.volume.enabled = true;
+        PostProcessSettings& s = volume.volume.settings;
+        s.bloom = true;
+        s.bloomIntensity = 0.35f;
+        s.bloomThreshold = 1.0f;
+        s.vignette = true;
+        s.vignetteIntensity = 0.2f;
+        s.tonemapping = true;
+        s.tonemapper = 1;
+    }
+    {
+        Entity& probe = Create("Reflection Probe");
+        probe.transform.position = { 0.0f, 1.0f, 0.0f };
+        probe.reflectionProbe.enabled = true;
+        probe.reflectionProbe.size = { 14.0f, 6.0f, 14.0f };
+    }
     for (Entity& e : entities) AddDefaultCollider(e);
+}
+
+PostProcessSettings Scene::ResolvePostProcess(const glm::vec3& cameraPos) const
+{
+    // Neutral values; each volume that overrides a group moves it towards its own values.
+    PostProcessSettings r;
+    r.bloomIntensity = 0.0f;
+    r.vignetteIntensity = 0.0f;
+    r.tonemapper = 1;
+    std::vector<const Entity*> volumes;
+    for (const Entity& e : entities)
+        if (e.volume.enabled && IsActiveInHierarchy(e.id)) volumes.push_back(&e);
+    std::stable_sort(volumes.begin(), volumes.end(), [](const Entity* a, const Entity* b) { return a->volume.priority < b->volume.priority; });
+
+    for (const Entity* e : volumes)
+    {
+        const VolumeComponent& v = e->volume;
+        float f = std::clamp(v.weight, 0.0f, 1.0f);
+        if (!v.isGlobal)
+        {
+            const glm::mat4 world = WorldMatrix(e->id);
+            const glm::vec3 scale(glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2])));
+            const glm::vec3 half = v.size * scale * 0.5f;
+            const glm::vec3 d = glm::max(glm::abs(cameraPos - glm::vec3(world[3])) - half, glm::vec3(0.0f));
+            const float dist = glm::length(d);
+            f *= dist <= 0.0f ? 1.0f : v.blendDistance > 0.0f ? std::clamp(1.0f - dist / v.blendDistance, 0.0f, 1.0f) : 0.0f;
+        }
+        if (f <= 0.0f) continue;
+        const PostProcessSettings& s = v.settings;
+        auto mix = [f](auto a, auto b) { return a + (b - a) * f; };
+        if (s.bloom)
+        {
+            r.bloom = true;
+            r.bloomIntensity = mix(r.bloomIntensity, s.bloomIntensity);
+            r.bloomThreshold = mix(r.bloomThreshold, s.bloomThreshold);
+            r.bloomScatter = mix(r.bloomScatter, s.bloomScatter);
+            r.bloomTint = mix(r.bloomTint, s.bloomTint);
+        }
+        if (s.colorAdjustments)
+        {
+            r.colorAdjustments = true;
+            r.postExposure = mix(r.postExposure, s.postExposure);
+            r.contrast = mix(r.contrast, s.contrast);
+            r.saturation = mix(r.saturation, s.saturation);
+            r.colorFilter = mix(r.colorFilter, s.colorFilter);
+        }
+        if (s.whiteBalance)
+        {
+            r.whiteBalance = true;
+            r.temperature = mix(r.temperature, s.temperature);
+            r.tint = mix(r.tint, s.tint);
+        }
+        if (s.vignette)
+        {
+            r.vignette = true;
+            r.vignetteIntensity = mix(r.vignetteIntensity, s.vignetteIntensity);
+            r.vignetteSmoothness = mix(r.vignetteSmoothness, s.vignetteSmoothness);
+            r.vignetteColor = mix(r.vignetteColor, s.vignetteColor);
+        }
+        if (s.tonemapping && f >= 0.5f)
+        {
+            r.tonemapping = true;
+            r.tonemapper = s.tonemapper;
+        }
+    }
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +450,24 @@ std::vector<EntityProperty> SerializeEntity(const Entity& e, bool includeObject)
           << c.height << ' ' << c.isTrigger << ' ' << c.friction << ' ' << c.bounciness;
         add("collider", o);
     }
+    {
+        const auto& p = e.reflectionProbe;
+        std::ostringstream o;
+        o << "probe " << p.enabled << ' ' << p.size << ' ' << p.boxProjection << ' ' << p.intensity;
+        add("probe", o);
+    }
+    {
+        const auto& v = e.volume;
+        const PostProcessSettings& s = v.settings;
+        std::ostringstream o;
+        o << "volume " << v.enabled << ' ' << v.isGlobal << ' ' << v.size << ' ' << v.blendDistance << ' ' << v.weight << ' ' << v.priority << ' '
+          << s.bloom << ' ' << s.bloomIntensity << ' ' << s.bloomThreshold << ' ' << s.bloomScatter << ' ' << s.bloomTint << ' '
+          << s.colorAdjustments << ' ' << s.postExposure << ' ' << s.contrast << ' ' << s.saturation << ' ' << s.colorFilter << ' '
+          << s.whiteBalance << ' ' << s.temperature << ' ' << s.tint << ' '
+          << s.vignette << ' ' << s.vignetteIntensity << ' ' << s.vignetteSmoothness << ' ' << s.vignetteColor << ' '
+          << s.tonemapping << ' ' << s.tonemapper;
+        add("volume", o);
+    }
     for (size_t i = 0; i < e.scripts.size(); ++i)
     {
         const ScriptComponent& sc = e.scripts[i];
@@ -444,6 +546,22 @@ bool ParseEntityLine(Entity& e, const std::string& line)
         int shape = 0;
         in >> c.enabled >> shape >> c.center >> c.size >> c.radius >> c.height >> c.isTrigger >> c.friction >> c.bounciness;
         c.shape = static_cast<ColliderShape>(std::clamp(shape, 0, 3));
+    }
+    else if (key == "probe")
+    {
+        auto& p = e.reflectionProbe;
+        in >> p.enabled >> p.size >> p.boxProjection >> p.intensity;
+    }
+    else if (key == "volume")
+    {
+        auto& v = e.volume;
+        PostProcessSettings& s = v.settings;
+        in >> v.enabled >> v.isGlobal >> v.size >> v.blendDistance >> v.weight >> v.priority
+           >> s.bloom >> s.bloomIntensity >> s.bloomThreshold >> s.bloomScatter >> s.bloomTint
+           >> s.colorAdjustments >> s.postExposure >> s.contrast >> s.saturation >> s.colorFilter
+           >> s.whiteBalance >> s.temperature >> s.tint
+           >> s.vignette >> s.vignetteIntensity >> s.vignetteSmoothness >> s.vignetteColor
+           >> s.tonemapping >> s.tonemapper;
     }
     else if (key == "script")
     {
@@ -559,7 +677,7 @@ bool Scene::Save(const std::string& path) const
         << sky.skyTint << ' ' << sky.groundColor << ' ' << sky.exposure << ' ' << sky.ambientIntensity << ' '
         << sky.cloudCoverage << ' ' << sky.cloudDensity << ' ' << sky.cloudSpeed << ' ' << sky.cloudScale << ' '
         << sky.stars << ' ' << sky.fallbackColor << ' ' << sky.shadowDistance << ' '
-        << sky.ssao << ' ' << sky.ssaoRadius << ' ' << sky.ssaoIntensity << "\n";
+        << sky.ssao << ' ' << sky.ssaoRadius << ' ' << sky.ssaoIntensity << ' ' << sky.reflectionIntensity << "\n";
     WriteEntities(out, entities);
     return static_cast<bool>(out);
 }
@@ -590,6 +708,7 @@ bool Scene::Load(const std::string& path)
             Optional(in, s.ssao);
             Optional(in, s.ssaoRadius);
             Optional(in, s.ssaoIntensity);
+            Optional(in, s.reflectionIntensity);
         }
     });
     if (!read || !ok) return false;

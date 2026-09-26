@@ -158,7 +158,7 @@ void Editor::SceneViewToolbar()
         m_Camera.Set2DMode(mode2D);
     ImGui::SameLine();
     const ImVec2 btn(26, ImGui::GetFrameHeight());
-    if (EditorUI::IconButton("##sky", Icon::Sky, m_ShowSkybox, "Toggle skybox", btn)) m_ShowSkybox = !m_ShowSkybox;
+    if (EditorUI::IconButton("##sky", Icon::Sky, m_ShowSkybox, "Toggle skybox and post-processing", btn)) m_ShowSkybox = !m_ShowSkybox;
     ImGui::SameLine();
     if (EditorUI::IconButton("##grid", Icon::Grid, m_ShowGrid, "Toggle grid", btn)) m_ShowGrid = !m_ShowGrid;
     if (ImGui::BeginPopupContextItem("GridOptions"))
@@ -318,8 +318,28 @@ void Editor::DrawColliderGizmo(ImDrawList* dl, const Entity& e)
 void Editor::SceneViewIcons(ImDrawList* dl)
 {
     for (EntityId id : m_Selection)
-        if (const Entity* e = m_Scene.Find(id); e && e->collider.enabled && m_Scene.IsActiveInHierarchy(id))
-            DrawColliderGizmo(dl, *e);
+    {
+        const Entity* e = m_Scene.Find(id);
+        if (!e || !m_Scene.IsActiveInHierarchy(id)) continue;
+        if (e->collider.enabled) DrawColliderGizmo(dl, *e);
+        // Reflection probe / local volume boxes (axis aligned, like the renderer uses them).
+        auto box = [&](const glm::vec3& size, ImU32 color) {
+            const glm::mat4 world = m_Scene.WorldMatrix(id);
+            const glm::vec3 scale(glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2])));
+            const glm::vec3 c(world[3]), h = glm::abs(size * scale) * 0.5f;
+            glm::vec3 corners[8];
+            for (int i = 0; i < 8; ++i)
+                corners[i] = c + glm::vec3((i & 1) ? h.x : -h.x, (i & 2) ? h.y : -h.y, (i & 4) ? h.z : -h.z);
+            const int edges[12][2] = { {0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7} };
+            for (auto& edge : edges)
+            {
+                ImVec2 a, b;
+                if (WorldToScreen(corners[edge[0]], a) && WorldToScreen(corners[edge[1]], b)) dl->AddLine(a, b, color, 1.3f);
+            }
+        };
+        if (e->reflectionProbe.enabled) box(e->reflectionProbe.size, IM_COL32(255, 229, 127, 200));
+        if (e->volume.enabled && !e->volume.isGlobal) box(e->volume.size, IM_COL32(120, 200, 255, 200));
+    }
 
     for (const Entity& e : m_Scene.entities)
     {

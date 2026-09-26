@@ -242,6 +242,7 @@ void Editor::OpenPrefabMode(const std::string& path)
     isolated.entities = contents;
     isolated.RecalculateNextId();
     m_Scene = std::move(isolated);
+    ResetReflectionProbes();
     m_PrefabModePath = path;
     m_SceneDirty = false;
     m_Selection.clear();
@@ -285,6 +286,7 @@ void Editor::ClosePrefabMode()
     const std::string path = m_PrefabModePath;
     m_PrefabModePath.clear();
     m_Scene = std::move(m_PrefabMode.scene);
+    ResetReflectionProbes();
     m_Selection = m_PrefabMode.selection;
     m_UndoStack = std::move(m_PrefabMode.undo);
     m_RedoStack = std::move(m_PrefabMode.redo);

@@ -208,6 +208,8 @@ void Editor::RenderViews(VkCommandBuffer cmd)
 {
     m_Renderer->ResetStats();
     const float time = m_Playing ? m_PlayTime : m_Time;
+    m_Renderer->UpdateEnvironment(cmd, m_Scene, time);
+    UpdateReflectionProbes(cmd, time);
 
     if (m_SceneViewVisible && m_Renderer->HasTarget(SceneRenderer::SceneViewId))
     {
@@ -221,6 +223,7 @@ void Editor::RenderViews(VkCommandBuffer cmd)
         rv.gridOpacity = m_GridOpacity;
         rv.shading = m_Shading;
         rv.drawSky = m_ShowSkybox;
+        rv.postProcessing = m_ShowSkybox; // Unity's scene view effects toggle covers skybox and post-processing
         rv.drawOutline = !m_Selection.empty();
         rv.selection = m_Selection;
         rv.time = time;
@@ -245,6 +248,34 @@ void Editor::RenderViews(VkCommandBuffer cmd)
             m_Renderer->Render(cmd, SceneRenderer::PreviewViewId, m_Scene, rv);
         }
     }
+}
+
+// Re-bakes (one per frame) reflection probes that moved, changed or whose lighting changed, like Unity's
+// automatic probe updates in the editor.
+void Editor::UpdateReflectionProbes(VkCommandBuffer cmd, float time)
+{
+    if (ImGuizmo::IsUsing()) return; // wait until the drag ends
+    for (const Entity& e : m_Scene.entities)
+    {
+        if (!e.reflectionProbe.enabled || !m_Scene.IsActiveInHierarchy(e.id)) continue;
+        const glm::mat4 world = m_Scene.WorldMatrix(e.id);
+        char sig[256];
+        std::snprintf(sig, sizeof(sig), "%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %u", world[3].x, world[3].y, world[3].z,
+                      e.reflectionProbe.size.x * glm::length(glm::vec3(world[0])), e.reflectionProbe.size.y * glm::length(glm::vec3(world[1])),
+                      e.reflectionProbe.size.z * glm::length(glm::vec3(world[2])), e.reflectionProbe.intensity,
+                      e.reflectionProbe.boxProjection ? 1.0f : 0.0f, 0.0f, m_Renderer->LightingVersion());
+        auto it = m_ProbeSignatures.find(e.id);
+        if (it != m_ProbeSignatures.end() && it->second == sig && m_Renderer->IsProbeBaked(e.id)) continue;
+        if (m_Renderer->BakeProbe(cmd, m_Scene, e.id, time)) m_ProbeSignatures[e.id] = sig;
+        else m_ProbeSignatures[e.id] = sig; // out of slots: don't retry every frame
+        return;
+    }
+}
+
+void Editor::ResetReflectionProbes()
+{
+    m_ProbeSignatures.clear();
+    m_Renderer->ResetProbes();
 }
 
 // ---------------------------------------------------------------------------
@@ -781,6 +812,17 @@ EntityId Editor::CreateEntity(const char* kind, EntityId parent)
     {
         e.camera.enabled = true;
     }
+    else if (k == "Reflection Probe")
+    {
+        e.reflectionProbe.enabled = true;
+    }
+    else if (k == "Global Volume" || k == "Box Volume")
+    {
+        e.volume.enabled = true;
+        e.volume.isGlobal = k == "Global Volume";
+        e.volume.settings.bloom = true;
+        e.volume.settings.tonemapping = true;
+    }
     EntityId id = e.id;
     PlaceInFrontOfCamera(id);
     Select(id);
@@ -1059,6 +1101,7 @@ void Editor::NewScene()
     ClosePrefabMode();
     PushUndo();
     m_Scene = Scene();
+    ResetReflectionProbes();
     std::string name = "Untitled";
     for (int i = 1; fs::exists(std::string(kScenesDir) + "/" + name + ".scene"); ++i) name = "Untitled " + std::to_string(i);
     m_Scene.name = name;
@@ -1117,6 +1160,7 @@ void Editor::OpenScene(const std::string& path)
     m_ScenePath = fs::path(path).generic_string();
     m_Scene.name = fs::path(path).stem().string();
     SyncPrefabInstancesAfterLoad();
+    ResetReflectionProbes();
     m_Selection.clear();
     m_UndoStack.clear();
     m_RedoStack.clear();

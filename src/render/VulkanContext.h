@@ -49,8 +49,11 @@ public:
     // Resource helpers
     // layers > 1 creates a 2D array image whose default view is VK_IMAGE_VIEW_TYPE_2D_ARRAY.
     GpuImage CreateImage(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t layers = 1, uint32_t mipLevels = 1);
+                         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t layers = 1, uint32_t mipLevels = 1,
+                         bool cube = false); // cube: layers is a multiple of 6, default view is CUBE / CUBE_ARRAY
     VkImageView CreateLayerView(const GpuImage& image, uint32_t layer, VkImageAspectFlags aspect);
+    // View of a single layer + mip level (render target into one cube face / mip).
+    VkImageView CreateSubView(const GpuImage& image, uint32_t layer, uint32_t mip, VkImageAspectFlags aspect);
     void DestroyImage(GpuImage& image);
     GpuBuffer CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
     void DestroyBuffer(GpuBuffer& buffer);

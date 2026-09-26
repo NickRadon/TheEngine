@@ -60,6 +60,78 @@ float SunShadow(vec3 worldPos, vec3 N, vec3 L)
     return mix(mix(1.0, lit, u.shadowParams.x), 1.0, fade);
 }
 
+// Point/spot light shadows: spot lights use one layer, point lights six cube-face layers.
+float LocalShadow(Light light, int type, vec3 worldPos, vec3 N)
+{
+    if (light.spot.z < -0.5) return 1.0;
+    int layer = int(light.spot.z + 0.5);
+    vec3 d = worldPos - light.positionRange.xyz;
+    if (type == 1)
+    {
+        vec3 a = abs(d);
+        int face = (a.x >= a.y && a.x >= a.z) ? (d.x > 0.0 ? 0 : 1) : (a.y >= a.z ? (d.y > 0.0 ? 2 : 3) : (d.z > 0.0 ? 4 : 5));
+        layer += face;
+    }
+    // Normal offset scaled with the texel footprint at this distance.
+    vec2 size = vec2(textureSize(localShadowMap, 0).xy);
+    float texelWorld = length(d) * 2.4 / size.x;
+    vec3 L = normalize(-d);
+    vec3 p = worldPos + N * texelWorld * (1.5 - clamp(dot(N, L), 0.0, 1.0));
+    vec4 sp = u.localShadowMatrices[layer] * vec4(p, 1.0);
+    if (sp.w <= 0.0) return 1.0;
+    vec3 s = sp.xyz / sp.w;
+    vec2 uv = s.xy * 0.5 + 0.5;
+    vec2 texel = 1.0 / size;
+    float lit = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+            lit += texture(localShadowMap, vec4(uv + vec2(x, y) * texel, float(layer), s.z));
+    lit /= 9.0;
+    return mix(1.0, lit, light.spot.w);
+}
+
+// Reflection probe lookup: the smallest probe box containing the point, else the sky.
+vec3 EnvironmentSpecular(vec3 worldPos, vec3 R, float roughness)
+{
+    float lod = roughness * (u.envParams.x - 1.0);
+    int best = -1;
+    float bestVolume = 1e30;
+    for (int i = 0; i < int(u.envParams.z); ++i)
+    {
+        Probe pr = u.probes[i];
+        if (all(greaterThanEqual(worldPos, pr.boxMin.xyz)) && all(lessThanEqual(worldPos, pr.boxMax.xyz)))
+        {
+            vec3 e = pr.boxMax.xyz - pr.boxMin.xyz;
+            float volume = e.x * e.y * e.z;
+            if (volume < bestVolume) { bestVolume = volume; best = i; }
+        }
+    }
+    if (best < 0) return textureLod(envCubes, vec4(R, 0.0), lod).rgb * u.envParams.y;
+
+    Probe pr = u.probes[best];
+    vec3 dir = R;
+    if (pr.boxMax.w > 0.5)
+    {
+        // Box projection: intersect the reflection ray with the probe box (parallax-corrected cubemap).
+        vec3 t1 = (pr.boxMax.xyz - worldPos) / R;
+        vec3 t2 = (pr.boxMin.xyz - worldPos) / R;
+        vec3 tf = max(t1, t2);
+        float t = min(min(tf.x, tf.y), tf.z);
+        dir = worldPos + R * t - pr.centerIndex.xyz;
+    }
+    return textureLod(envCubes, vec4(dir, pr.centerIndex.w), lod).rgb * pr.boxMin.w;
+}
+
+// Split-sum environment BRDF, analytic fit (Karis, "Physically Based Shading on Mobile").
+vec2 EnvBrdf(float roughness, float NdotV)
+{
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
 struct Surface
 {
     vec3 N, V, albedo, F0;
@@ -150,6 +222,7 @@ void main()
                 atten *= smoothstep(light.spot.x, light.spot.y, cd);
             }
         }
+        if (atten > 0.0 && type != 0) atten *= LocalShadow(light, type, inWorldPos, N);
         if (atten > 0.0)
             direct += Brdf(s, Ll, light.colorIntensity.rgb * light.colorIntensity.w * PI * atten);
     }
@@ -158,10 +231,12 @@ void main()
     float NdotV = max(dot(N, s.V), 1e-3);
     vec3 skyN = SkyAmbient(N);
     vec3 R = reflect(-s.V, N);
-    vec3 skyR = SkyAmbient(R);
+    // Specular: prefiltered sky / reflection probe (roughness picks the mip) with the split-sum BRDF.
+    vec2 envBrdf = EnvBrdf(s.roughness, NdotV);
+    vec3 specularAmbient = EnvironmentSpecular(inWorldPos, R, s.roughness) * (s.F0 * envBrdf.x + envBrdf.y);
     vec3 Fa = s.F0 + (max(vec3(1.0 - s.roughness), s.F0) - s.F0) * pow(1.0 - NdotV, 5.0);
     vec3 kdA = (1.0 - Fa) * (1.0 - s.metallic);
-    vec3 ambient = (kdA * s.albedo * skyN + Fa * skyR * (1.0 - s.roughness * 0.7)) * u.sunColor.w * ao;
+    vec3 ambient = (kdA * s.albedo * skyN * u.sunColor.w + specularAmbient) * ao;
 
     direct *= mix(1.0, ao, u.aoParams.w);
     outColor = vec4(direct + ambient + pc.emission.rgb, 1.0);

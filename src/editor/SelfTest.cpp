@@ -137,8 +137,44 @@ void Editor::EnableSelfTest(const std::string& captureDir)
             if (frame == 146) { m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ao_buffer.bmp"); m_Shading = ShadingMode::Shaded; m_Scene.sky.ssao = false; }
             if (frame == 155) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/ao_off.bmp");
             if (frame == 156) { if (light) light->light.castShadows = true; m_Scene.sky.ssao = true; }
-            if (frame == 157) { if (Entity* s = find("Sphere")) { Select(s->id); m_Camera.SetState(glm::vec3(m_Scene.WorldMatrix(s->id)[3]), m_Camera.Rotation(), 8.0f, false); } }
-            return frame >= 170;
+            // Reflections on the metallic sphere (sky + reflection probe).
+            if (frame == 157)
+            {
+                ClearSelection();
+                if (Entity* s = find("Sphere"))
+                    m_Camera.SetState(glm::vec3(m_Scene.WorldMatrix(s->id)[3]), glm::angleAxis(glm::radians(25.0f), glm::vec3(0, 1, 0)) *
+                                      glm::angleAxis(glm::radians(-12.0f), glm::vec3(1, 0, 0)), 2.4f, false);
+            }
+            if (frame == 185) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/reflections.bmp");
+            // Point light shadows at dusk.
+            static float sunIntensity = 1.0f;
+            if (frame == 186 && light)
+            {
+                sunIntensity = light->light.intensity;
+                light->light.intensity = 0.03f;
+                light->transform.SetEuler({ -25.0f, -30.0f, 0.0f });
+                m_Camera.SetState(glm::vec3(0.8f, 0.3f, 0.6f), glm::angleAxis(glm::radians(-150.0f), glm::vec3(0, 1, 0)) *
+                                  glm::angleAxis(glm::radians(-40.0f), glm::vec3(1, 0, 0)), 7.0f, false);
+            }
+            if (frame == 215) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/point_shadows.bmp");
+            if (frame == 216 && light)
+            {
+                light->light.intensity = sunIntensity;
+                light->transform.SetEuler({ -35.0f, -30.0f, 0.0f });
+                m_Camera.SetState(glm::vec3(0, 0.5f, 0), m_Camera.Rotation(), 11.0f, false);
+            }
+            // Post-processing on / off (Global Volume: bloom, vignette, tonemapping).
+            if (frame == 240) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/post_on.bmp");
+            if (frame == 241) if (Entity* v = find("Global Volume")) v->volume.enabled = false;
+            if (frame == 265) m_Renderer->CaptureView(SceneRenderer::SceneViewId, captureDir + "/post_off.bmp");
+            if (frame == 266)
+            {
+                if (Entity* v = find("Global Volume")) v->volume.enabled = true;
+                // Same view the gizmo tests were written for.
+                const glm::quat rot = glm::angleAxis(glm::radians(30.0f), glm::vec3(0, 1, 0)) * glm::angleAxis(glm::radians(-30.0f), glm::vec3(1, 0, 0));
+                if (Entity* s = find("Sphere")) { Select(s->id); m_Camera.SetState(glm::vec3(m_Scene.WorldMatrix(s->id)[3]), rot, 8.0f, false); }
+            }
+            return frame >= 280;
         } });
     }
 
@@ -632,6 +668,62 @@ void Editor::EnableSelfTest(const std::string& captureDir)
         std::filesystem::remove(script, ec);
         m_Scripts->RequestCompile();
         return true;
+    } });
+
+    t.steps.push_back({ "rendering: local shadows, reflection probes, post-processing volumes", [this, &t, find](int frame) {
+        // Let the views render a few frames (probe baking happens one probe per frame).
+        if (frame < 15) return false;
+        t.Check(m_Renderer->ShadowedLocalLights() >= 1, "the template's point light renders cube shadow maps");
+        const Entity* probe = find("Reflection Probe");
+        t.Check(probe && m_Renderer->IsProbeBaked(probe->id), "reflection probes are baked automatically");
+
+        // Local volume blending: full weight inside the box, fading over the blend distance, none beyond it.
+        Entity& box = m_Scene.Create("TestVolume");
+        box.transform.position = { 50.0f, 0.0f, 0.0f };
+        box.volume.enabled = true;
+        box.volume.isGlobal = false;
+        box.volume.size = glm::vec3(4.0f);
+        box.volume.blendDistance = 2.0f;
+        box.volume.priority = 10.0f;
+        box.volume.settings.colorAdjustments = true;
+        box.volume.settings.saturation = -100.0f;
+        const float inside = m_Scene.ResolvePostProcess({ 50.0f, 0.0f, 0.0f }).saturation;
+        const float half = m_Scene.ResolvePostProcess({ 53.0f, 0.0f, 0.0f }).saturation;
+        const float outside = m_Scene.ResolvePostProcess({ 60.0f, 0.0f, 0.0f }).saturation;
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "local volumes blend by distance (%.0f / %.0f / %.0f)", inside, half, outside);
+        t.Check(inside == -100.0f && std::fabs(half + 50.0f) < 1.0f && outside == 0.0f, msg);
+        m_Scene.Destroy(m_Scene.entities.back().id);
+        return true;
+    } });
+
+    t.steps.push_back({ "post-processing volume changes the image", [this, &t, find](int frame) {
+        auto capture = [this](const char* name) {
+            const std::string path = (std::filesystem::temp_directory_path() / name).string();
+            m_Renderer->CaptureView(SceneRenderer::SceneViewId, path);
+            std::ifstream in(path, std::ios::binary);
+            return std::vector<unsigned char>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        };
+        static std::vector<unsigned char> with;
+        Entity* volume = find("Global Volume");
+        if (!volume) { t.Check(false, "template scene has a Global Volume"); return true; }
+        if (frame == 0) { volume->volume.settings.vignetteIntensity = 0.6f; return false; }
+        if (frame == 5) { with = capture("theengine_post_on.bmp"); volume->volume.enabled = false; return false; }
+        if (frame == 10)
+        {
+            const std::vector<unsigned char> without = capture("theengine_post_off.bmp");
+            volume->volume.enabled = true;
+            volume->volume.settings.vignetteIntensity = 0.2f;
+            double diff = 0.0;
+            const size_t n = std::min(with.size(), without.size());
+            for (size_t i = 54; i < n; ++i) diff += std::abs(static_cast<int>(with[i]) - static_cast<int>(without[i]));
+            diff /= std::max<size_t>(n - 54, 1);
+            char msg[128];
+            std::snprintf(msg, sizeof(msg), "Global Volume (bloom, vignette) changes the rendered image (mean diff %.2f)", diff);
+            t.Check(n > 54 && diff > 1.0, msg);
+            return true;
+        }
+        return false;
     } });
 
     t.steps.push_back({ "no errors", [&t](int frame) {

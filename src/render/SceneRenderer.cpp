@@ -20,23 +20,25 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
 
     // Descriptor pool / layouts
     VkDescriptorPoolSize sizes[] = {
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 768 },
     };
     VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 32;
+    poolInfo.maxSets = 320;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = sizes;
     vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_DescriptorPool);
 
-    VkDescriptorSetLayoutBinding uboBindings[3] = {
+    VkDescriptorSetLayoutBinding uboBindings[5] = {
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }, // cascaded shadow map
         { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }, // ambient occlusion
+        { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }, // point/spot shadows
+        { 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }, // reflection cube maps
     };
     VkDescriptorSetLayoutCreateInfo uboLayout{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-    uboLayout.bindingCount = 3;
+    uboLayout.bindingCount = 5;
     uboLayout.pBindings = uboBindings;
     vkCreateDescriptorSetLayout(device, &uboLayout, nullptr, &m_UboLayout);
 
@@ -48,6 +50,16 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
     texLayout.bindingCount = 2;
     texLayout.pBindings = texBindings;
     vkCreateDescriptorSetLayout(device, &texLayout, nullptr, &m_CompositeLayout);
+
+    VkDescriptorSetLayoutBinding finalBindings[3] = {
+        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+    };
+    VkDescriptorSetLayoutCreateInfo finalLayout{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    finalLayout.bindingCount = 3;
+    finalLayout.pBindings = finalBindings;
+    vkCreateDescriptorSetLayout(device, &finalLayout, nullptr, &m_FinalLayout);
 
     VkPushConstantRange scenePush{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants) };
     VkDescriptorSetLayout sceneSets[2] = { m_UboLayout, resources->MaterialLayout() };
@@ -64,13 +76,18 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
     postLayout.pSetLayouts = postSets;
     vkCreatePipelineLayout(device, &postLayout, nullptr, &m_PostLayout);
 
-    VkPushConstantRange compPush{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::vec4) * 2 };
-    VkPipelineLayoutCreateInfo compLayout{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-    compLayout.setLayoutCount = 1;
-    compLayout.pSetLayouts = &m_CompositeLayout;
-    compLayout.pushConstantRangeCount = 1;
-    compLayout.pPushConstantRanges = &compPush;
-    vkCreatePipelineLayout(device, &compLayout, nullptr, &m_CompositeLayoutPipe);
+    VkPushConstantRange fragPush{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128 };
+    auto pushLayout = [&](VkDescriptorSetLayout set, VkPipelineLayout& out) {
+        VkPipelineLayoutCreateInfo info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        info.setLayoutCount = 1;
+        info.pSetLayouts = &set;
+        info.pushConstantRangeCount = 1;
+        info.pPushConstantRanges = &fragPush;
+        vkCreatePipelineLayout(device, &info, nullptr, &out);
+    };
+    pushLayout(m_FinalLayout, m_CompositeLayoutPipe);
+    pushLayout(m_CompositeLayout, m_TexPushLayout);
+    pushLayout(m_UboLayout, m_UboPushLayout);
 
     VkSamplerCreateInfo sampler{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     sampler.magFilter = VK_FILTER_LINEAR;
@@ -81,6 +98,10 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
     VkSamplerCreateInfo point = sampler;
     point.magFilter = point.minFilter = VK_FILTER_NEAREST;
     vkCreateSampler(device, &point, nullptr, &m_PointSampler);
+    VkSamplerCreateInfo env = sampler;
+    env.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    env.maxLod = static_cast<float>(kEnvMips);
+    vkCreateSampler(device, &env, nullptr, &m_EnvSampler);
 
     // Shadow map: depth array with hardware comparison (PCF).
     VkSamplerCreateInfo shadowSampler = sampler;
@@ -108,44 +129,88 @@ bool SceneRenderer::Init(VulkanContext* vk, ResourceCache* resources)
                                     VK_ACCESS_2_SHADER_READ_BIT);
     });
 
+    // Point/spot light shadow layers and the reflection cube maps.
+    m_LocalShadowMap = vk->CreateImage(kLocalShadowSize, kLocalShadowSize, kShadowFormat,
+                                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                       VK_IMAGE_ASPECT_DEPTH_BIT, VK_SAMPLE_COUNT_1_BIT, kMaxLocalShadowLayers);
+    for (uint32_t i = 0; i < kMaxLocalShadowLayers; ++i)
+        m_LocalShadowViews[i] = vk->CreateLayerView(m_LocalShadowMap, i, VK_IMAGE_ASPECT_DEPTH_BIT);
+    m_EnvCubes = vk->CreateImage(kEnvSize, kEnvSize, kHdrFormat,
+                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, 6 * kEnvCubes, kEnvMips, true);
+    for (uint32_t layer = 0; layer < 6 * kEnvCubes; ++layer)
+        for (uint32_t mip = 0; mip < kEnvMips; ++mip)
+            m_EnvFaceViews.push_back(vk->CreateSubView(m_EnvCubes, layer, mip, VK_IMAGE_ASPECT_COLOR_BIT));
+    m_EnvSource = vk->CreateImage(kEnvSize, kEnvSize, kHdrFormat,
+                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, 6, kEnvMips, true);
+    for (uint32_t face = 0; face < 6; ++face)
+        m_EnvSourceFaceViews[face] = vk->CreateSubView(m_EnvSource, face, 0, VK_IMAGE_ASPECT_COLOR_BIT);
+    m_WhiteImage = vk->CreateImage(1, 1, kAoFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    vk->ImmediateSubmit([&](VkCommandBuffer cmd) {
+        auto clearTo = [&](const GpuImage& img, VkImageAspectFlags aspect, float value) {
+            VulkanContext::ImageBarrier(cmd, img.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            const VkImageSubresourceRange range{ aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+            if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT)
+            {
+                VkClearDepthStencilValue clear{ value, 0 };
+                vkCmdClearDepthStencilImage(cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+            }
+            else
+            {
+                VkClearColorValue clear{ { value, value, value, 1.0f } };
+                vkCmdClearColorImage(cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+            }
+            VulkanContext::ImageBarrier(cmd, img.image, aspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+        };
+        clearTo(m_LocalShadowMap, VK_IMAGE_ASPECT_DEPTH_BIT, 1.0f);
+        clearTo(m_EnvCubes, VK_IMAGE_ASPECT_COLOR_BIT, 0.0f);
+        clearTo(m_EnvSource, VK_IMAGE_ASPECT_COLOR_BIT, 0.0f);
+        clearTo(m_WhiteImage, VK_IMAGE_ASPECT_COLOR_BIT, 1.0f);
+    });
+
     const VkSampleCountFlagBits maxSamples = vk->MaxMsaaSamples();
     m_Samples = maxSamples >= VK_SAMPLE_COUNT_4_BIT ? VK_SAMPLE_COUNT_4_BIT : maxSamples;
 
     // Per-view uniform buffers and descriptor sets
-    auto allocate = [&](VkDescriptorSetLayout layout) {
-        VkDescriptorSetAllocateInfo alloc{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-        alloc.descriptorPool = m_DescriptorPool;
-        alloc.descriptorSetCount = 1;
-        alloc.pSetLayouts = &layout;
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        vkAllocateDescriptorSets(device, &alloc, &set);
-        return set;
+    auto allocate = [&](VkDescriptorSetLayout layout) { return Allocate(layout); };
+    // Scene uniform sets: per view and frame, plus one per frame for the sky cube capture.
+    auto makeUboSet = [&](GpuBuffer& buffer, VkDescriptorSet& set) {
+        buffer = vk->CreateBuffer(sizeof(SceneUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        set = allocate(m_UboLayout);
+        VkDescriptorBufferInfo bufInfo{ buffer.buffer, 0, sizeof(SceneUBO) };
+        VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = set;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &bufInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        WriteImage(set, 1, m_ShadowMap.view, m_ShadowSampler);
+        WriteImage(set, 2, m_WhiteImage.view, m_Sampler);
+        WriteImage(set, 3, m_LocalShadowMap.view, m_ShadowSampler);
+        WriteImage(set, 4, m_EnvCubes.view, m_EnvSampler);
     };
+    for (uint32_t f = 0; f < VulkanContext::kFramesInFlight; ++f) makeUboSet(m_EnvUbo[f], m_EnvUboSet[f]);
+    m_PrefilterSet = allocate(m_CompositeLayout);
+    WriteImageSet(m_PrefilterSet, m_EnvSource.view, m_EnvSampler, m_EnvSource.view, m_EnvSampler);
     for (Target& t : m_Targets)
     {
-        for (uint32_t f = 0; f < VulkanContext::kFramesInFlight; ++f)
-        {
-            t.ubo[f] = vk->CreateBuffer(sizeof(SceneUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            t.uboSet[f] = allocate(m_UboLayout);
-            VkDescriptorBufferInfo bufInfo{ t.ubo[f].buffer, 0, sizeof(SceneUBO) };
-            VkDescriptorImageInfo shadowInfo{ m_ShadowSampler, m_ShadowMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            VkWriteDescriptorSet writes[2] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }, { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET } };
-            writes[0].dstSet = t.uboSet[f];
-            writes[0].dstBinding = 0;
-            writes[0].descriptorCount = 1;
-            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            writes[0].pBufferInfo = &bufInfo;
-            writes[1].dstSet = t.uboSet[f];
-            writes[1].dstBinding = 1;
-            writes[1].descriptorCount = 1;
-            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[1].pImageInfo = &shadowInfo;
-            vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
-        }
-        t.compositeSet = allocate(m_CompositeLayout);
+        for (uint32_t f = 0; f < VulkanContext::kFramesInFlight; ++f) makeUboSet(t.ubo[f], t.uboSet[f]);
+        t.compositeSet = allocate(m_FinalLayout);
         t.ssaoSet = allocate(m_CompositeLayout);
         t.blurSet = allocate(m_CompositeLayout);
+        t.remapSet = allocate(m_CompositeLayout);
+        for (uint32_t i = 0; i < kBloomMips; ++i)
+        {
+            t.bloomDownSets[i] = allocate(m_CompositeLayout);
+            t.bloomUpSets[i] = allocate(m_CompositeLayout);
+        }
     }
 
     CreatePipelines();
@@ -162,13 +227,26 @@ void SceneRenderer::Shutdown()
         for (auto& b : t.ubo) m_Vk->DestroyBuffer(b);
     }
     for (VkPipeline p : { m_SkyPipeline, m_MeshPipeline, m_WirePipeline, m_GridPipeline, m_MaskPipeline, m_CompositePipeline,
-                          m_ShadowPipeline, m_NormalsPipeline, m_SsaoPipeline, m_BlurPipeline })
+                          m_ShadowPipeline, m_NormalsPipeline, m_SsaoPipeline, m_BlurPipeline, m_SkyCubePipeline, m_RemapPipeline,
+                          m_PrefilterPipeline, m_BloomDownPipeline, m_BloomUpPipeline })
         if (p) vkDestroyPipeline(device, p, nullptr);
+    for (auto& b : m_EnvUbo) m_Vk->DestroyBuffer(b);
+    for (VkImageView v : m_LocalShadowViews) vkDestroyImageView(device, v, nullptr);
+    for (VkImageView v : m_EnvFaceViews) vkDestroyImageView(device, v, nullptr);
+    for (VkImageView v : m_EnvSourceFaceViews) vkDestroyImageView(device, v, nullptr);
+    m_Vk->DestroyImage(m_LocalShadowMap);
+    m_Vk->DestroyImage(m_EnvCubes);
+    m_Vk->DestroyImage(m_EnvSource);
+    m_Vk->DestroyImage(m_WhiteImage);
+    vkDestroySampler(device, m_EnvSampler, nullptr);
     vkDestroyPipelineLayout(device, m_SceneLayout, nullptr);
     vkDestroyPipelineLayout(device, m_PostLayout, nullptr);
     vkDestroyPipelineLayout(device, m_CompositeLayoutPipe, nullptr);
+    vkDestroyPipelineLayout(device, m_TexPushLayout, nullptr);
+    vkDestroyPipelineLayout(device, m_UboPushLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, m_UboLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, m_CompositeLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, m_FinalLayout, nullptr);
     vkDestroyDescriptorPool(device, m_DescriptorPool, nullptr);
     vkDestroySampler(device, m_Sampler, nullptr);
     vkDestroySampler(device, m_PointSampler, nullptr);
@@ -180,7 +258,7 @@ void SceneRenderer::Shutdown()
 VkPipeline SceneRenderer::CreatePipeline(VkShaderModule vert, VkShaderModule frag, VkPipelineLayout layout,
                                          VkFormat colorFormat, VkFormat depthFormat, bool vertexInput,
                                          bool depthTest, bool depthWrite, bool blend, VkPolygonMode polygon,
-                                         VkCullModeFlags cull, float depthBias, VkSampleCountFlagBits samples)
+                                         VkCullModeFlags cull, float depthBias, VkSampleCountFlagBits samples, bool additive)
 {
     VkPipelineShaderStageCreateInfo stages[2] = {
         { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr },
@@ -242,6 +320,13 @@ VkPipeline SceneRenderer::CreatePipeline(VkShaderModule vert, VkShaderModule fra
         att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         att.alphaBlendOp = VK_BLEND_OP_ADD;
     }
+    if (additive)
+    {
+        att.blendEnable = VK_TRUE;
+        att.srcColorBlendFactor = att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        att.srcAlphaBlendFactor = att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        att.colorBlendOp = att.alphaBlendOp = VK_BLEND_OP_ADD;
+    }
     const bool hasColor = colorFormat != VK_FORMAT_UNDEFINED;
     VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
     cb.attachmentCount = hasColor ? 1 : 0;
@@ -291,7 +376,13 @@ void SceneRenderer::CreatePipelines()
     VkShaderModule normals = m_Vk->LoadShader("normals.frag");
     VkShaderModule ssao = m_Vk->LoadShader("ssao.frag");
     VkShaderModule blur = m_Vk->LoadShader("ssao_blur.frag");
-    const VkShaderModule all[] = { fullscreen, sky, meshVert, meshFrag, grid, mask, composite, shadow, normals, ssao, blur };
+    VkShaderModule skyCube = m_Vk->LoadShader("skycube.frag");
+    VkShaderModule remap = m_Vk->LoadShader("cube_remap.frag");
+    VkShaderModule prefilter = m_Vk->LoadShader("prefilter.frag");
+    VkShaderModule bloomDown = m_Vk->LoadShader("bloom_down.frag");
+    VkShaderModule bloomUp = m_Vk->LoadShader("bloom_up.frag");
+    const VkShaderModule all[] = { fullscreen, sky, meshVert, meshFrag, grid, mask, composite, shadow, normals, ssao, blur,
+                                   skyCube, remap, prefilter, bloomDown, bloomUp };
     for (VkShaderModule m : all)
         if (!m)
         {
@@ -322,6 +413,16 @@ void SceneRenderer::CreatePipelines()
                                     false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
     m_BlurPipeline = CreatePipeline(fullscreen, blur, m_PostLayout, kAoFormat, VK_FORMAT_UNDEFINED, false,
                                     false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
+    m_SkyCubePipeline = CreatePipeline(fullscreen, skyCube, m_UboPushLayout, kHdrFormat, VK_FORMAT_UNDEFINED, false,
+                                       false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
+    m_RemapPipeline = CreatePipeline(fullscreen, remap, m_TexPushLayout, kHdrFormat, VK_FORMAT_UNDEFINED, false,
+                                     false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
+    m_PrefilterPipeline = CreatePipeline(fullscreen, prefilter, m_TexPushLayout, kHdrFormat, VK_FORMAT_UNDEFINED, false,
+                                         false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
+    m_BloomDownPipeline = CreatePipeline(fullscreen, bloomDown, m_TexPushLayout, kHdrFormat, VK_FORMAT_UNDEFINED, false,
+                                         false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one);
+    m_BloomUpPipeline = CreatePipeline(fullscreen, bloomUp, m_TexPushLayout, kHdrFormat, VK_FORMAT_UNDEFINED, false,
+                                       false, false, false, fill, VK_CULL_MODE_NONE, 0.0f, one, true);
 
     for (VkShaderModule m : all) vkDestroyShaderModule(device, m, nullptr);
 }
@@ -330,7 +431,13 @@ void SceneRenderer::DestroyTarget(Target& t)
 {
     if (t.imguiTexture) ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(t.imguiTexture));
     t.imguiTexture = 0;
-    for (GpuImage* img : { &t.hdrMsaa, &t.hdr, &t.depth, &t.mask, &t.output, &t.prepassDepth, &t.normals, &t.aoRaw, &t.ao })
+    for (VkImageView& v : t.bloomViews)
+    {
+        if (v) vkDestroyImageView(m_Vk->Device(), v, nullptr);
+        v = VK_NULL_HANDLE;
+    }
+    t.bloomMips = 0;
+    for (GpuImage* img : { &t.hdrMsaa, &t.hdr, &t.depth, &t.mask, &t.output, &t.prepassDepth, &t.normals, &t.aoRaw, &t.ao, &t.bloom })
         m_Vk->DestroyImage(*img);
     t.width = t.height = 0;
 }
@@ -375,13 +482,18 @@ void SceneRenderer::EnsureSize(ViewId view, uint32_t width, uint32_t height)
     t.depth = m_Vk->CreateImage(width, height, kDepthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                                 VK_IMAGE_ASPECT_DEPTH_BIT, m_Samples);
     t.mask = m_Vk->CreateImage(width, height, kMaskFormat, colorUsage, colorAspect);
-    t.output = m_Vk->CreateImage(width, height, kOutputFormat, colorUsage, colorAspect);
+    t.output = m_Vk->CreateImage(width, height, kOutputFormat, colorUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, colorAspect); // + CaptureView
     t.prepassDepth = m_Vk->CreateImage(width, height, kDepthFormat,
                                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                        VK_IMAGE_ASPECT_DEPTH_BIT);
     t.normals = m_Vk->CreateImage(width, height, kNormalFormat, colorUsage, colorAspect);
     t.aoRaw = m_Vk->CreateImage(width, height, kAoFormat, colorUsage, colorAspect);
     t.ao = m_Vk->CreateImage(width, height, kAoFormat, colorUsage | VK_IMAGE_USAGE_TRANSFER_DST_BIT, colorAspect);
+    const uint32_t bw = std::max(width / 2, 1u), bh = std::max(height / 2, 1u);
+    t.bloomMips = 1;
+    while (t.bloomMips < kBloomMips && std::min(bw, bh) >> t.bloomMips >= 4) ++t.bloomMips;
+    t.bloom = m_Vk->CreateImage(bw, bh, kHdrFormat, colorUsage | VK_IMAGE_USAGE_TRANSFER_DST_BIT, colorAspect, VK_SAMPLE_COUNT_1_BIT, 1, t.bloomMips);
+    for (uint32_t i = 0; i < t.bloomMips; ++i) t.bloomViews[i] = m_Vk->CreateSubView(t.bloom, 0, i, colorAspect);
 
     // Start sampled images in a readable layout (the AO texture cleared to "unoccluded").
     m_Vk->ImmediateSubmit([&](VkCommandBuffer cmd) {
@@ -395,9 +507,27 @@ void SceneRenderer::EnsureSize(ViewId view, uint32_t width, uint32_t height)
         VulkanContext::ImageBarrier(cmd, t.ao.image, colorAspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+        VulkanContext::ImageBarrier(cmd, t.bloom.image, colorAspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearColorValue black{ { 0.0f, 0.0f, 0.0f, 1.0f } };
+        VkImageSubresourceRange all{ colorAspect, 0, VK_REMAINING_MIP_LEVELS, 0, 1 };
+        vkCmdClearColorImage(cmd, t.bloom.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        VulkanContext::ImageBarrier(cmd, t.bloom.image, colorAspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
     });
 
-    WriteImageSet(t.compositeSet, t.hdr.view, m_Sampler, t.mask.view, m_Sampler);
+    WriteImage(t.compositeSet, 0, t.hdr.view, m_Sampler);
+    WriteImage(t.compositeSet, 1, t.mask.view, m_Sampler);
+    WriteImage(t.compositeSet, 2, t.bloomViews[0], m_Sampler);
+    WriteImageSet(t.remapSet, t.hdr.view, m_Sampler, t.hdr.view, m_Sampler);
+    for (uint32_t i = 0; i < t.bloomMips; ++i)
+    {
+        const VkImageView down = i == 0 ? t.hdr.view : t.bloomViews[i - 1];
+        WriteImageSet(t.bloomDownSets[i], down, m_Sampler, down, m_Sampler);
+        const VkImageView up = i + 1 < t.bloomMips ? t.bloomViews[i + 1] : t.bloomViews[i];
+        WriteImageSet(t.bloomUpSets[i], up, m_Sampler, up, m_Sampler);
+    }
     WriteImageSet(t.ssaoSet, t.prepassDepth.view, m_PointSampler, t.normals.view, m_PointSampler);
     WriteImageSet(t.blurSet, t.aoRaw.view, m_PointSampler, t.prepassDepth.view, m_PointSampler);
     for (VkDescriptorSet set : t.uboSet)
@@ -777,29 +907,23 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
     if (!t.width || !m_MeshPipeline) return;
 
     // Uniforms
-    glm::vec3 sunDir, sunColor;
+    glm::vec3 sunDir;
     float sunIntensity;
     EntityId sunId = kNullEntity;
-    FindSun(scene, sunDir, sunColor, sunIntensity, &sunId);
-
     SceneUBO ubo{};
+    FillSkyUniforms(scene, rv.time, ubo, sunDir, sunIntensity, sunId);
     ubo.view = rv.view;
     ubo.proj = rv.proj;
     ubo.viewProj = rv.proj * rv.view;
     ubo.invViewProj = glm::inverse(ubo.viewProj);
     ubo.cameraPos = glm::vec4(rv.cameraPos, rv.orthographic ? 1.0f : 0.0f);
-    ubo.sunDir = glm::vec4(sunDir, sunIntensity);
-    ubo.sunColor = glm::vec4(sunColor, sky.ambientIntensity);
-    ubo.skyTint = glm::vec4(sky.skyTint, sky.atmosphereThickness);
-    ubo.groundColor = glm::vec4(sky.groundColor, sky.exposure);
-    ubo.sunParams = glm::vec4(sky.sunSize, sky.sunConvergence, rv.time, sky.stars);
-    ubo.cloudParams = glm::vec4(sky.cloudCoverage, sky.cloudDensity, sky.cloudSpeed, sky.cloudScale);
     ubo.gridParams = glm::vec4(static_cast<float>(rv.gridPlane), rv.gridOpacity, rv.drawGrid ? 1.0f : 0.0f, 0.0f);
     ubo.viewportSize = glm::vec4(t.width, t.height, 1.0f / t.width, 1.0f / t.height);
-    ComputeAmbient(sky, sunDir, sunIntensity, ubo);
 
-    // Point, spot and additional directional lights.
+    // Point, spot and additional directional lights. Shadowed point/spot lights get layers in the local shadow map.
     int lightCount = 0;
+    int shadowLayers = 0;
+    m_LocalShadowCount = 0;
     for (const Entity& e : scene.entities)
     {
         if (!e.light.enabled || e.id == sunId || !scene.IsActiveInHierarchy(e.id) || lightCount >= kMaxLights) continue;
@@ -811,7 +935,35 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
         gl.directionType = glm::vec4(glm::normalize(glm::vec3(world * glm::vec4(0, 0, -1, 0))), static_cast<float>(l.type));
         const float outer = glm::radians(std::clamp(l.spotAngle, 1.0f, 179.0f)) * 0.5f;
         const float inner = glm::radians(std::clamp(std::min(l.innerSpotAngle, l.spotAngle), 0.0f, 179.0f)) * 0.5f;
-        gl.spot = glm::vec4(std::cos(outer), std::max(std::cos(inner), std::cos(outer) + 1e-4f), 0.0f, 0.0f);
+        gl.spot = glm::vec4(std::cos(outer), std::max(std::cos(inner), std::cos(outer) + 1e-4f), -1.0f, l.shadowStrength);
+
+        const int needed = l.type == LightType::Point ? 6 : l.type == LightType::Spot ? 1 : 0;
+        if (needed && l.castShadows && rv.shadows && m_ShadowPipeline && shadowLayers + needed <= kMaxLocalShadowLayers)
+        {
+            const glm::vec3 pos(world[3]);
+            const float range = std::max(l.range, 0.05f);
+            const float nearPlane = std::clamp(range * 0.002f, 0.02f, 0.2f);
+            gl.spot.z = static_cast<float>(shadowLayers);
+            if (l.type == LightType::Spot)
+            {
+                const glm::vec3 dir(gl.directionType);
+                const glm::vec3 up = std::fabs(dir.y) > 0.99f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+                const float fov = glm::radians(std::clamp(l.spotAngle + 4.0f, 10.0f, 170.0f));
+                ubo.localShadowMatrices[shadowLayers] = glm::perspectiveRH_ZO(fov, 1.0f, nearPlane, range) * glm::lookAt(pos, pos + dir, up);
+            }
+            else
+            {
+                // Cube faces in the order the shader selects them (+X -X +Y -Y +Z -Z); slightly wider than 90 degrees
+                // so filtering near face edges stays inside the map.
+                static const glm::vec3 dirs[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+                static const glm::vec3 ups[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+                const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(95.0f), 1.0f, nearPlane, range);
+                for (int f = 0; f < 6; ++f)
+                    ubo.localShadowMatrices[shadowLayers + f] = proj * glm::lookAt(pos, pos + dirs[f], ups[f]);
+            }
+            shadowLayers += needed;
+            ++m_LocalShadowCount;
+        }
     }
     ubo.lightCount = glm::ivec4(lightCount, 0, 0, 0);
 
@@ -829,9 +981,28 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
     const float aoMode = !ssao ? 0.0f : rv.shading == ShadingMode::AmbientOcclusion ? 2.0f : 1.0f; // 2 = debug view
     ubo.aoParams = glm::vec4(aoMode, sky.ssaoIntensity, std::max(sky.ssaoRadius, 0.01f), 0.25f);
 
+    // Reflections: prefiltered sky plus baked reflection probes.
+    int probeCount = 0;
+    for (const Entity& e : scene.entities)
+    {
+        if (!e.reflectionProbe.enabled || probeCount >= kMaxProbes || !scene.IsActiveInHierarchy(e.id)) continue;
+        auto slot = m_ProbeSlots.find(e.id);
+        if (slot == m_ProbeSlots.end()) continue;
+        const glm::mat4 world = scene.WorldMatrix(e.id);
+        const glm::vec3 pos(world[3]);
+        const glm::vec3 scale(glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2])));
+        const glm::vec3 half = glm::abs(e.reflectionProbe.size * scale) * 0.5f;
+        GpuProbe& p = ubo.probes[probeCount++];
+        p.centerIndex = glm::vec4(pos, static_cast<float>(slot->second));
+        p.boxMin = glm::vec4(pos - half, e.reflectionProbe.intensity);
+        p.boxMax = glm::vec4(pos + half, e.reflectionProbe.boxProjection ? 1.0f : 0.0f);
+    }
+    ubo.envParams = glm::vec4(static_cast<float>(kEnvMips), sky.reflectionIntensity, static_cast<float>(probeCount), 0.0f);
+
     const uint32_t frame = m_Vk->FrameIndex();
     std::memcpy(t.ubo[frame].mapped, &ubo, sizeof(ubo));
     if (shadows) RenderShadows(cmd, scene, t.uboSet[frame]);
+    if (shadowLayers > 0) RenderLocalShadows(cmd, scene, t.uboSet[frame], shadowLayers);
     if (ssao) RenderSsao(cmd, t, scene, t.uboSet[frame]);
 
     // Layout transitions (previous frame's reads happen in fragment shaders)
@@ -972,11 +1143,18 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
     VulkanContext::ImageBarrier(cmd, t.mask.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, colorOut, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                 fragShader, VK_ACCESS_2_SHADER_READ_BIT);
+    // --- Post-processing volumes ---
+    PostProcessSettings post;
+    post.bloomIntensity = 0.0f;
+    if (rv.postProcessing && rv.shading != ShadingMode::AmbientOcclusion) post = scene.ResolvePostProcess(rv.cameraPos);
+    const bool bloom = post.bloom && post.bloomIntensity > 0.0f && m_BloomDownPipeline;
+    if (bloom) RenderBloom(cmd, t, post);
+
     VulkanContext::ImageBarrier(cmd, t.output.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, fragShader, 0,
                                 colorOut, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-    // --- Composite: tonemap + outline ---
+    // --- Composite: bloom, grading, vignette, tonemap + outline ---
     {
         VkRenderingAttachmentInfo color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
         color.imageView = t.output.view;
@@ -994,11 +1172,28 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_CompositePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_CompositeLayoutPipe, 0, 1, &t.compositeSet, 0, nullptr);
-        glm::vec4 push[2] = {
-            glm::vec4(1.0f, 0.4f, 0.0f, rv.drawOutline ? 1.0f : 0.0f),
-            glm::vec4(rv.exposure, 2.0f, 0.0f, 0.0f),
-        };
-        vkCmdPushConstants(cmd, m_CompositeLayoutPipe, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
+        CompositePush push{};
+        push.outlineColor = glm::vec4(1.0f, 0.4f, 0.0f, rv.drawOutline ? 1.0f : 0.0f);
+        const float exposure = rv.exposure * (post.colorAdjustments ? std::exp2(post.postExposure) : 1.0f);
+        push.params = glm::vec4(exposure, 2.0f, static_cast<float>(post.tonemapping ? post.tonemapper : 1), bloom ? post.bloomIntensity : 0.0f);
+        push.bloomTint = glm::vec4(post.bloomTint, 0.0f);
+        push.grading = glm::vec4(1.0f + post.contrast / 100.0f, 1.0f + post.saturation / 100.0f, post.colorAdjustments ? 1.0f : 0.0f, 0.0f);
+        push.colorFilter = glm::vec4(post.colorFilter, 1.0f);
+        if (post.whiteBalance)
+        {
+            // Unity's ColorUtils.ComputeColorBalance: shift the white point along the daylight locus in LMS space.
+            const float t1 = post.temperature / 65.0f, t2 = post.tint / 65.0f;
+            const float x = 0.31271f - t1 * (t1 < 0.0f ? 0.1f : 0.05f);
+            const float y = 2.87f * x - 3.0f * x * x - 0.27509507f + t2 * 0.05f;
+            const float X = x / y, Y = 1.0f, Z = (1.0f - x - y) / y;
+            const glm::vec3 lms(0.7328f * X + 0.4296f * Y - 0.1624f * Z, -0.7036f * X + 1.6975f * Y + 0.0061f * Z,
+                                0.0030f * X + 0.0136f * Y + 0.9834f * Z);
+            push.balance = glm::vec4(glm::vec3(0.949237f, 1.03542f, 1.08728f) / lms, 1.0f);
+        }
+        push.vignette = glm::vec4(post.vignetteIntensity * 3.0f, post.vignetteSmoothness * 5.0f, 1.0f,
+                                  post.vignette && post.vignetteIntensity > 0.0f ? 1.0f : 0.0f);
+        push.vignetteColor = glm::vec4(post.vignetteColor, 1.0f);
+        vkCmdPushConstants(cmd, m_CompositeLayoutPipe, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRendering(cmd);
     }

@@ -1,5 +1,7 @@
 // Shared scene uniform block. Must match SceneUBO in src/render/SceneRenderer.h.
 #define MAX_LIGHTS 32
+#define MAX_LOCAL_SHADOW_LAYERS 24
+#define MAX_PROBES 8
 
 // Point / spot / extra directional lights. Must match GpuLight in SceneRenderer.h.
 struct Light
@@ -7,7 +9,15 @@ struct Light
     vec4 positionRange;   // xyz = world position, w = range
     vec4 colorIntensity;  // rgb = color, w = intensity
     vec4 directionType;   // xyz = direction the light points, w = type (0 directional, 1 point, 2 spot)
-    vec4 spot;            // x = cos(outer half angle), y = cos(inner half angle)
+    vec4 spot;            // x = cos(outer half angle), y = cos(inner half angle), z = first shadow layer (-1 none), w = shadow strength
+};
+
+// Reflection probe (box volume, baked into one slice of envCubes). Must match GpuProbe in SceneRenderer.h.
+struct Probe
+{
+    vec4 centerIndex;     // xyz = capture position, w = cube index in envCubes
+    vec4 boxMin;          // xyz = world box min, w = intensity
+    vec4 boxMax;          // xyz = world box max, w = 1 for box projection
 };
 
 layout(set = 0, binding = 0) uniform SceneUBO
@@ -36,10 +46,27 @@ layout(set = 0, binding = 0) uniform SceneUBO
     vec4 viewportSize;      // xy = size in pixels, zw = 1 / size
     ivec4 lightCount;       // x = number of entries in lights[]
     Light lights[MAX_LIGHTS];
+    mat4 localShadowMatrices[MAX_LOCAL_SHADOW_LAYERS]; // spot: 1 layer, point: 6 cube faces
+    vec4 envParams;         // x = env mip count, y = sky reflection intensity, z = probe count
+    Probe probes[MAX_PROBES];
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2DArrayShadow shadowMap;
 layout(set = 0, binding = 2) uniform sampler2D aoTex; // screen-space ambient occlusion (1 = unoccluded)
+layout(set = 0, binding = 3) uniform sampler2DArrayShadow localShadowMap; // point/spot light shadows
+layout(set = 0, binding = 4) uniform samplerCubeArray envCubes;           // 0 = sky, 1.. = reflection probes (prefiltered mips)
+
+// Direction of a cube map texel (Vulkan/GL face order +X -X +Y -Y +Z -Z; uv from the top-left of the face).
+vec3 CubeFaceDir(int face, vec2 uv)
+{
+    vec2 st = uv * 2.0 - 1.0;
+    if (face == 0) return vec3(1.0, -st.y, -st.x);
+    if (face == 1) return vec3(-1.0, -st.y, st.x);
+    if (face == 2) return vec3(st.x, 1.0, st.y);
+    if (face == 3) return vec3(st.x, -1.0, -st.y);
+    if (face == 4) return vec3(st.x, -st.y, 1.0);
+    return vec3(-st.x, -st.y, -1.0);
+}
 
 // Fullscreen-triangle helper: returns NDC for vertex 0..2.
 vec2 FullscreenNdc(int index)
