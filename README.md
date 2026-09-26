@@ -10,7 +10,9 @@ A small Unity-style game engine/editor written in C++20:
 - **Lighting:** PBR (GGX) shading, directional/point/spot lights (up to 32), 4-cascade soft sun shadows (stabilized, 16-tap PCF), SSAO, 4x MSAA, ACES tonemapping
 - **Materials:** `.mat` assets with albedo/normal/mask textures, tiling and emission; textures are mipmapped and hot-reloaded when changed on disk
 - **Models:** glTF 2.0 (`.gltf` / `.glb`) import via cgltf; node hierarchy, meshes, materials and embedded images are brought in
-- **Scripting:** C# like Unity (`MonoBehaviour`, `Start`/`Update`, `transform`, `Input`, `Time`, `Debug.Log`, serialized fields in the Inspector), hosted on .NET through hostfxr
+- **Scripting:** C# like Unity (`MonoBehaviour`, `Start`/`Update`/`FixedUpdate`, `transform`, `Input`, `Time`, `Debug.Log`, `Instantiate`, serialized fields in the Inspector), hosted on .NET through hostfxr
+- **Physics:** Jolt Physics with Unity-style Rigidbody and Box/Sphere/Capsule/Mesh Collider components, triggers, raycasts and collision messages
+- **Prefabs:** reusable object hierarchies with per-property overrides, Apply/Revert, and a prefab editing mode
 - **Projects:** a Unity Hub-style launcher; each project has `Assets/`, `Library/` and `ProjectSettings/`
 
 ## Build
@@ -55,13 +57,37 @@ public class Rotator : MonoBehaviour
 
 Saving a script triggers a background `dotnet build` into `Library/ScriptAssemblies`. Errors appear in the Console with file and line, and they block Play mode until they're fixed. Public (or `[SerializeField]`) fields show up in the Inspector. Changes made during Play mode are reloaded when you stop.
 
+## Physics
+
+Add a **Rigidbody** and a collider (Box, Sphere, Capsule or Mesh) from *Add Component*. New primitives get Unity's default collider, and colliders are drawn in green on the selected object. Objects with a collider but no Rigidbody are static. The simulation runs in play mode at a fixed 50 Hz.
+
+```csharp
+public class Ball : MonoBehaviour
+{
+    Rigidbody body;
+    void Start() { body = GetComponent<Rigidbody>(); }
+    void FixedUpdate() { if (Input.GetKey(KeyCode.Space)) body.AddForce(Vector3.up * 20f); }
+    void OnCollisionEnter(Collision c) { Debug.Log("hit " + c.gameObject.name); }
+    void OnTriggerEnter(Collider other) { Debug.Log("entered " + other.name); }
+}
+```
+
+`Physics.Raycast`, `Physics.gravity`, `Rigidbody.velocity`/`AddForce`/`AddTorque` (with `ForceMode`) and `isKinematic` work as in Unity.
+
+## Prefabs
+
+- **Create:** drag an object from the Hierarchy into the Project window (or right-click it and choose *Create Prefab*). Instances show in blue.
+- **Place:** drag a `.prefab` into the Scene view or Hierarchy. From C#, add a `public GameObject prefab;` field, drop the prefab on it in the Inspector, and call `Instantiate(prefab, position, rotation)`.
+- **Edit:** double-click the prefab (or use *Open* in the Inspector) to edit it on its own, then use the back arrow in the Hierarchy. Changes reach every instance.
+- **Overrides:** values you change on an instance are kept when the prefab changes. The Inspector's *Overrides* menu lists them, with *Apply All* and *Revert All*. The root's position, rotation and name always belong to the instance.
+
 ## Assets
 
 The Project window shows the real `Assets/` folder: a folder tree, thumbnails, search, create/rename/delete (to the Recycle Bin), drag-to-move, and *Show in Explorer*. You can drop files from Explorer to import them. Drag a model into the Scene view or Hierarchy to instantiate it, and a material onto an object to assign it.
 
 ## Tests
 
-`TheEngine --selftest` creates a temporary project and drives the editor through injected ImGui input. It covers gizmo drag, undo/redo, marquee selection, orbit, zoom, F framing, play mode, save/load, materials, glTF import, C# scripts and compile errors, and exits with the number of failures. It never touches the OS mouse or keyboard. Add `--capture-dir <folder>` to also save Scene view renders as BMP files.
+`TheEngine --selftest` creates a temporary project and drives the editor through injected ImGui input. It covers gizmo drag, undo/redo, marquee selection, orbit, zoom, F framing, play mode, save/load, materials, glTF import, C# scripts and compile errors, physics and collision messages, prefabs and `Instantiate`, and exits with the number of failures. It never touches the OS mouse or keyboard. Add `--capture-dir <folder>` to also save Scene view renders as BMP files.
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
@@ -99,10 +125,11 @@ The scene toolbar also has these shading modes: Shaded, Wireframe, Shaded Wirefr
 src/core       logging, platform helpers (file dialogs, processes), projects
 src/launcher   project launcher (Hub)
 src/render     Vulkan context, meshes, resource cache (textures/materials/glTF), scene renderer
-src/scene      entities, components, hierarchy, text scene + material formats
+src/scene      entities, components, hierarchy, text scene/material/prefab formats, prefab overrides
+src/physics    Jolt Physics world (bodies, contacts, raycasts)
 src/scripting  .NET host, script compilation and native API for C#
 src/editor     editor shell, panels, asset browser, scene/game views, Unity-style camera, self-test
 scripting/     TheEngine.ScriptCore (the C# engine API)
 shaders/       GLSL (sky, lit mesh, shadows, SSAO, grid, selection mask, composite)
-external/      third-party sources (imgui, ImGuizmo, ImAnim, glfw, volk, Vulkan-Headers, glm, glslang, stb, cgltf)
+external/      third-party sources (imgui, ImGuizmo, ImAnim, glfw, volk, Vulkan-Headers, glm, glslang, stb, cgltf, JoltPhysics) as git submodules
 ```

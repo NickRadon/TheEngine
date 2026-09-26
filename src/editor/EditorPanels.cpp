@@ -96,6 +96,7 @@ void Editor::DrawHierarchy()
     ImGui::SameLine();
     SearchField("##hsearch", m_HierarchyFilter, sizeof(m_HierarchyFilter), ImGui::GetContentRegionAvail().x - 6);
     ImGui::Separator();
+    DrawPrefabModeBar();
 
     m_HierarchyOrderPrev.swap(m_HierarchyOrder);
     m_HierarchyOrder.clear();
@@ -162,6 +163,7 @@ void Editor::DrawHierarchy()
         }
         std::string asset;
         if (AcceptAssetDrop(".glb", asset) || AcceptAssetDrop(".gltf", asset)) InstantiateModel(asset, kNullEntity, nullptr);
+        else if (AcceptAssetDrop(".prefab", asset)) InstantiatePrefab(asset, kNullEntity, nullptr);
         ImGui::EndDragDropTarget();
     }
     if (ImGui::BeginPopupContextItem("HierarchyEmptyContext"))
@@ -241,6 +243,24 @@ void Editor::DrawHierarchyNode(EntityId id, const std::string& filter)
         if (ImGui::MenuItem("Delete", "Del")) DeleteSelection();
         ImGui::Separator();
         if (ImGui::MenuItem("Frame", "F")) FrameSelection();
+        if (const EntityId prefabRoot = Prefab::InstanceRoot(m_Scene, id); prefabRoot && !m_Playing)
+        {
+            if (ImGui::BeginMenu("Prefab"))
+            {
+                const std::string asset = m_Scene.Find(prefabRoot)->prefab;
+                if (ImGui::MenuItem("Open Asset in Context")) OpenPrefabMode(asset);
+                if (ImGui::MenuItem("Select Asset")) SelectAsset(asset);
+                ImGui::Separator();
+                if (ImGui::MenuItem("Apply All Overrides")) ApplyPrefabOverrides(prefabRoot);
+                if (ImGui::MenuItem("Revert All Overrides")) RevertPrefabOverrides(prefabRoot);
+                if (ImGui::MenuItem("Unpack")) UnpackPrefab(prefabRoot);
+                ImGui::EndMenu();
+            }
+        }
+        else if (!m_Playing && m_PrefabModePath.empty() && ImGui::MenuItem("Create Prefab"))
+        {
+            CreatePrefab(id, m_ProjectFolder.empty() ? "Assets" : m_ProjectFolder);
+        }
         ImGui::Separator();
         EntityMenuItems(id);
         ImGui::EndPopup();
@@ -292,6 +312,7 @@ void Editor::DrawHierarchyNode(EntityId id, const std::string& filter)
         }
         std::string asset;
         if (AcceptAssetDrop(".glb", asset) || AcceptAssetDrop(".gltf", asset)) InstantiateModel(asset, id, nullptr);
+        else if (AcceptAssetDrop(".prefab", asset)) InstantiatePrefab(asset, id, nullptr);
         else if (AcceptAssetDrop(".mat", asset)) AssignMaterial(id, asset);
         ImGui::EndDragDropTarget();
         e = m_Scene.Find(id);
@@ -335,7 +356,13 @@ void Editor::DrawHierarchyNode(EntityId id, const std::string& filter)
     }
     else
     {
-        const ImU32 textCol = activeInHierarchy ? IM_COL32(210, 210, 210, 255) : IM_COL32(125, 125, 125, 255);
+        ImU32 textCol = activeInHierarchy ? IM_COL32(210, 210, 210, 255) : IM_COL32(125, 125, 125, 255);
+        if (const EntityId prefabRoot = Prefab::InstanceRoot(m_Scene, id))
+        {
+            const bool missing = !PrefabContents(m_Scene.Find(prefabRoot)->prefab);
+            textCol = missing ? IM_COL32(230, 110, 110, activeInHierarchy ? 255 : 150)
+                              : IM_COL32(125, 178, 255, activeInHierarchy ? 255 : 150);
+        }
         dl->AddText(ImVec2(x + 18, itemMin.y + (h - ImGui::GetFontSize()) * 0.5f), textCol, e->name.c_str());
     }
 
@@ -409,6 +436,14 @@ void Editor::DrawInspector()
             ImGui::TextDisabled("%d objects selected (editing the active one)", static_cast<int>(m_Selection.size()));
     }
     ImGui::Spacing();
+    DrawPrefabInstanceHeader(e->id);
+    e = m_Scene.Find(ActiveEntity()); // the prefab header can change the scene
+    if (!e)
+    {
+        ImGui::PopID();
+        ImGui::End();
+        return;
+    }
 
     // Transform
     if (EditorUI::ComponentHeader("Transform", Icon::Move, nullptr, nullptr))

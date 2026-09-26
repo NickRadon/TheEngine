@@ -594,7 +594,8 @@ void Editor::SceneViewDragDrop()
     if (!ImGui::BeginDragDropTarget()) return;
     std::string asset;
     const ImVec2 mouse = ImGui::GetIO().MousePos;
-    if (AcceptAssetDrop(".glb", asset) || AcceptAssetDrop(".gltf", asset))
+    const bool isPrefab = AcceptAssetDrop(".prefab", asset);
+    if (isPrefab || AcceptAssetDrop(".glb", asset) || AcceptAssetDrop(".gltf", asset))
     {
         // Place where the mouse ray hits geometry or the ground plane, like Unity.
         glm::vec3 origin, dir;
@@ -612,7 +613,8 @@ void Editor::SceneViewDragDrop()
         }
         if (bestT < 1e29f) point = origin + dir * bestT;
         else if (std::fabs(dir.y) > 1e-4f && -origin.y / dir.y > 0.0f) point = origin + dir * (-origin.y / dir.y);
-        InstantiateModel(asset, kNullEntity, &point);
+        if (isPrefab) InstantiatePrefab(asset, kNullEntity, &point);
+        else InstantiateModel(asset, kNullEntity, &point);
     }
     else if (AcceptAssetDrop(".mat", asset))
     {

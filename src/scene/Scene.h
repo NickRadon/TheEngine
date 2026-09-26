@@ -199,6 +199,7 @@ public:
     void CreateDefault(); // Main Camera + Directional Light + a few primitives
 
     EntityId NextId() const { return m_NextId; }
+    void RecalculateNextId(); // after replacing entities directly
 
 private:
     EntityId CloneRecursive(EntityId src, EntityId newParent, int insertAt);

@@ -484,6 +484,156 @@ void Editor::EnableSelfTest(const std::string& captureDir)
         return true;
     } });
 
+    t.steps.push_back({ "prefabs: create, instances, overrides, prefab mode, apply, revert", [this, &t, find](int) {
+        const std::string path = "Assets/Prefabs/Capsule.prefab";
+        Entity* capsule = find("Capsule");
+        if (!capsule) { t.Check(false, "default scene contains 'Capsule'"); return true; }
+        const EntityId original = capsule->id;
+        const std::string created = CreatePrefab(original, "Assets/Prefabs");
+        const Entity* hat = find("Hat");
+        t.Check(created == path && std::filesystem::exists(path) && find("Capsule")->prefab == path && hat && hat->prefabId != kNullEntity,
+                "dragging an object into the Project window creates a prefab and links the object to it");
+
+        const EntityId a = InstantiatePrefab(path, kNullEntity, nullptr);
+        const EntityId b = InstantiatePrefab(path, kNullEntity, nullptr);
+        auto child = [this](EntityId root, const char* name) -> Entity* {
+            for (Entity& e : m_Scene.entities)
+                if (e.parent == root && e.name == name) return &e;
+            return nullptr;
+        };
+        t.Check(child(a, "Hat") && child(b, "Hat") && Prefab::InstanceRoot(m_Scene, child(b, "Hat")->id) == b,
+                "instantiating a prefab recreates its hierarchy");
+
+        // Overrides: A recolors its hat, B scales its root.
+        const glm::vec3 moved(4.0f, 1.0f, -3.0f);
+        m_Scene.Find(a)->transform.position = moved;
+        child(a, "Hat")->meshRenderer.color = { 1.0f, 0.0f, 0.0f };
+        m_Scene.Find(b)->transform.scale = glm::vec3(2.0f);
+        RefreshPrefabOverrides();
+        const auto described = Prefab::DescribeOverrides(m_Scene, a);
+        t.Check(described.size() == 1 && described[0] == "Hat: Mesh Renderer",
+                ("overrides are detected per component (" + (described.empty() ? std::string("none") : described[0]) + ")").c_str());
+
+        // Edit the prefab asset in prefab mode: root metallic, hat color, and a new child.
+        OpenPrefabMode(path);
+        bool isolated = m_Scene.entities.size() == 2 && !m_PrefabModePath.empty();
+        for (Entity& e : m_Scene.entities)
+        {
+            if (e.parent == kNullEntity) e.meshRenderer.metallic = 0.9f;
+            else e.meshRenderer.color = { 0.0f, 0.0f, 1.0f };
+        }
+        Entity& feather = m_Scene.Create("Feather", m_Scene.entities[0].id);
+        feather.transform.position = { 0.0f, 1.5f, 0.0f };
+        m_SceneDirty = true;
+        ClosePrefabMode();
+        t.Check(isolated && m_PrefabModePath.empty() && m_Scene.Find(a) && m_Scene.Find(b), "prefab mode edits the asset in isolation and returns to the scene");
+
+        const Entity* ea = m_Scene.Find(a);
+        const Entity* eb = m_Scene.Find(b);
+        t.Check(ea->meshRenderer.metallic == 0.9f && eb->meshRenderer.metallic == 0.9f && find("Capsule")->meshRenderer.metallic == 0.9f,
+                "prefab changes propagate to every instance");
+        t.Check(child(a, "Hat")->meshRenderer.color == glm::vec3(1, 0, 0) && child(b, "Hat")->meshRenderer.color == glm::vec3(0, 0, 1),
+                "instance overrides survive prefab changes; other instances take the new value");
+        t.Check(glm::length(ea->transform.position - moved) < 1e-4f && eb->transform.scale == glm::vec3(2.0f),
+                "root position and overridden scale are kept");
+        t.Check(child(a, "Feather") && child(b, "Feather") && child(original, "Feather"), "objects added to the prefab appear in all instances");
+
+        // Apply All from instance A: its hat color and a new smoothness become the prefab's.
+        m_Scene.Find(a)->meshRenderer.smoothness = 0.12f;
+        ApplyPrefabOverrides(a);
+        t.Check(m_Scene.Find(b)->meshRenderer.smoothness == 0.12f && child(b, "Hat")->meshRenderer.color == glm::vec3(1, 0, 0) &&
+                    m_Scene.Find(b)->transform.scale == glm::vec3(2.0f),
+                "Apply All writes the instance to the prefab and updates the others (keeping their overrides)");
+
+        // Revert All on B drops its scale override.
+        RevertPrefabOverrides(b);
+        t.Check(m_Scene.Find(b)->transform.scale == find("Capsule")->transform.scale, "Revert All restores prefab values");
+
+        // Stored overrides survive a save/load while the prefab changes on disk.
+        m_Scene.Find(b)->transform.scale = glm::vec3(3.0f);
+        RefreshPrefabOverrides();
+        const std::string scenePath = "Assets/Scenes/_prefabtest.scene";
+        m_Scene.Save(scenePath);
+        Prefab::Contents contents;
+        Prefab::Load(path, contents);
+        contents[0].meshRenderer.color = { 0.2f, 0.9f, 0.2f };
+        contents[0].transform.scale = glm::vec3(1.5f);
+        Prefab::SaveContents(path, contents);
+        m_PrefabCache.clear();
+        m_PrefabStamps.clear();
+        OpenScene(scenePath);
+        const Entity* lb = nullptr;
+        for (const Entity& e : m_Scene.entities)
+            if (e.id == b) lb = &e;
+        t.Check(lb && lb->meshRenderer.color == glm::vec3(0.2f, 0.9f, 0.2f) && lb->transform.scale == glm::vec3(3.0f),
+                "loading a scene applies prefab changes made on disk but keeps saved overrides");
+        std::error_code ec;
+        std::filesystem::remove(scenePath, ec);
+        return true;
+    } });
+
+    t.steps.push_back({ "C# Instantiate(prefab) from a GameObject field", [this, &t, find](int frame) {
+        const std::string script = "Assets/Scripts/Spawner.cs";
+        if (frame == 0)
+        {
+            std::ofstream(script) << "using TheEngine;\n"
+                                     "public class Spawner : MonoBehaviour\n{\n"
+                                     "    public GameObject prefab;\n"
+                                     "    public int spawned;\n"
+                                     "    void Start()\n    {\n"
+                                     "        for (int i = 0; i < 3; ++i)\n"
+                                     "            if (Instantiate(prefab, new Vector3(i * 2, 5, -6), Quaternion.identity) != null) spawned++;\n"
+                                     "        Instantiate(GameObject.Find(\"Cube\"));\n"
+                                     "    }\n}\n";
+            m_Scripts->RequestCompile();
+            t.scan = 0.0f;
+            return false;
+        }
+        if (frame < 5 || m_Scripts->IsCompiling()) return false;
+        if (t.scan == 0.0f)
+        {
+            const ScriptClassInfo* info = m_Scripts->FindClass("Spawner");
+            const bool typed = info && !info->fields.empty() && info->fields[0].type == "GameObject";
+            t.Check(typed, "GameObject fields are exposed to the Inspector");
+            if (!typed) return true;
+            Entity& host = m_Scene.Create("SpawnerHost");
+            ScriptComponent sc;
+            sc.className = "Spawner";
+            sc.fields.push_back({ "prefab", "GameObject", "prefab:Assets/Prefabs/Capsule.prefab" });
+            host.scripts.push_back(sc);
+            EnterPlayMode();
+            t.scan = 1.0f;
+            return false;
+        }
+        if (t.scan == 1.0f)
+        {
+            if (m_PlayTime < 0.5f) return false;
+            int clones = 0, hostClones = 0, bodies = m_Physics.BodyCount();
+            for (const Entity& e : m_Scene.entities)
+            {
+                if (e.name == "Capsule(Clone)" && e.prefab == "Assets/Prefabs/Capsule.prefab") ++clones;
+                if (e.name == "Cube(Clone)") ++hostClones;
+            }
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "Instantiate spawns prefab instances (%d) and clones scene objects (%d)", clones, hostClones);
+            t.Check(clones == 3 && hostClones == 1, msg);
+            const Entity* first = nullptr;
+            for (const Entity& e : m_Scene.entities)
+                if (e.name == "Capsule(Clone)") { first = &e; break; }
+            t.Check(first && glm::length(first->transform.position - glm::vec3(0, 5, -6)) < 0.5f + 0.5f * 9.81f * 0.25f,
+                    "Instantiate places the instance at the given position");
+            t.Check(bodies >= 3, "instantiated objects get physics bodies");
+            ExitPlayMode();
+            t.scan = 2.0f;
+            return false;
+        }
+        if (Entity* host = find("SpawnerHost")) m_Scene.Destroy(host->id);
+        std::error_code ec;
+        std::filesystem::remove(script, ec);
+        m_Scripts->RequestCompile();
+        return true;
+    } });
+
     t.steps.push_back({ "no errors", [&t](int frame) {
         if (frame < 10) return false;
         const int errors = Log::CountOf(LogLevel::Error) - t.errorsAtStart - t.failures;

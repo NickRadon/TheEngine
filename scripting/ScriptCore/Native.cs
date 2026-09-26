@@ -31,6 +31,8 @@ namespace TheEngine.Internal
         public delegate* unmanaged<ulong, float*, int, int, void> RigidbodyAddForce;
         public delegate* unmanaged<float*, float, float*, ulong*, int> PhysicsRaycast;
         public delegate* unmanaged<int, float*, void> PhysicsGravity;
+        public delegate* unmanaged<ulong, float*, int, ulong> EntityInstantiate;
+        public delegate* unmanaged<char*, float*, int, ulong> PrefabInstantiate;
     }
 
     internal static unsafe class Native

@@ -171,6 +171,12 @@ EntityId Scene::CloneRecursive(EntityId src, EntityId newParent, int insertAt)
     return newId;
 }
 
+void Scene::RecalculateNextId()
+{
+    m_NextId = 1;
+    for (const Entity& e : entities) m_NextId = std::max(m_NextId, e.id + 1);
+}
+
 EntityId Scene::Duplicate(EntityId id)
 {
     const Entity* e = Find(id);

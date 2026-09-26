@@ -52,6 +52,8 @@ bool Editor::Init(VulkanContext* vk, SceneRenderer* renderer, ResourceCache* res
         LOG_INFO("Loaded scene %s", m_ScenePath.c_str());
     }
     m_Scene.name = fs::path(m_ScenePath).stem().string();
+    SyncPrefabInstancesAfterLoad();
+    m_SceneDirty = false;
     m_Scripts->SetScene(&m_Scene);
     ScanAssets();
     m_Scripts->RequestCompile();
@@ -83,6 +85,7 @@ bool Editor::Init(VulkanContext* vk, SceneRenderer* renderer, ResourceCache* res
 void Editor::Shutdown()
 {
     if (m_Playing) ExitPlayMode();
+    ClosePrefabMode();
     m_Physics.End();
 }
 
@@ -113,6 +116,7 @@ void Editor::Update(float dt)
     {
         m_AssetScanTimer = 0.0f;
         ScanAssets();
+        if (m_PrefabModePath.empty()) ScanPrefabs();
         m_Res->CheckForChanges();
     }
 
@@ -953,6 +957,7 @@ void Editor::Redo()
 void Editor::EnterPlayMode()
 {
     if (m_Playing) return;
+    ClosePrefabMode();
     if (m_Scripts->IsCompiling())
     {
         Notify("Waiting for script compilation to finish...");
@@ -1051,6 +1056,7 @@ void Editor::GatherScriptInput()
 void Editor::NewScene()
 {
     if (m_Playing) ExitPlayMode();
+    ClosePrefabMode();
     PushUndo();
     m_Scene = Scene();
     std::string name = "Untitled";
@@ -1077,6 +1083,12 @@ void Editor::SaveScene()
         LOG_WARN("Cannot save the scene while in play mode");
         return;
     }
+    if (!m_PrefabModePath.empty())
+    {
+        SavePrefabMode();
+        return;
+    }
+    RefreshPrefabOverrides(); // store which properties each prefab instance overrides
     std::error_code ec;
     fs::create_directories(fs::path(m_ScenePath).parent_path(), ec);
     if (m_Scene.Save(m_ScenePath))
@@ -1094,6 +1106,7 @@ void Editor::SaveScene()
 void Editor::OpenScene(const std::string& path)
 {
     if (m_Playing) ExitPlayMode();
+    ClosePrefabMode();
     Scene loaded;
     if (!loaded.Load(path))
     {
@@ -1103,6 +1116,7 @@ void Editor::OpenScene(const std::string& path)
     m_Scene = std::move(loaded);
     m_ScenePath = fs::path(path).generic_string();
     m_Scene.name = fs::path(path).stem().string();
+    SyncPrefabInstancesAfterLoad();
     m_Selection.clear();
     m_UndoStack.clear();
     m_RedoStack.clear();

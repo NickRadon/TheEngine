@@ -3,6 +3,7 @@
 #include "editor/EditorCamera.h"
 #include "render/Resources.h"
 #include "render/SceneRenderer.h"
+#include "scene/Prefab.h"
 #include "scene/Scene.h"
 #include "scripting/ScriptEngine.h"
 
@@ -92,6 +93,24 @@ private:
     bool AcceptAssetDrop(const char* extension, std::string& outPath); // inside BeginDragDropTarget
     void SelectAsset(const std::string& path);
     void GatherScriptInput();
+
+    // --- Prefabs (EditorPrefabs.cpp) ---
+    const Prefab::Contents* PrefabContents(const std::string& path);
+    std::vector<EntityId> PrefabInstanceRoots(const std::string& path) const; // empty path = all
+    void OnPrefabChanged(const std::string& path, const Prefab::Contents& newContents, EntityId except = kNullEntity);
+    void SyncPrefabInstancesAfterLoad();
+    void RefreshPrefabOverrides();
+    void ScanPrefabs();
+    EntityId InstantiatePrefab(const std::string& path, EntityId parent, const glm::vec3* position);
+    std::string CreatePrefab(EntityId id, const std::string& folder);
+    void ApplyPrefabOverrides(EntityId root);
+    void RevertPrefabOverrides(EntityId root);
+    void UnpackPrefab(EntityId root);
+    void OpenPrefabMode(const std::string& path);
+    bool SavePrefabMode();
+    void ClosePrefabMode();
+    void DrawPrefabModeBar();
+    void DrawPrefabInstanceHeader(EntityId id);
 
     // --- Actions ---
     void Select(EntityId id, bool additive = false);
@@ -243,6 +262,22 @@ private:
     char m_ProjectSearch[128] = {};
     float m_AssetScanTimer = 0.0f;
     std::map<std::string, std::filesystem::file_time_type> m_ScriptStamps;
+
+    // Prefabs
+    std::map<std::string, Prefab::Contents> m_PrefabCache;
+    std::map<std::string, std::filesystem::file_time_type> m_PrefabStamps;
+    std::string m_PrefabModePath; // non-empty while a prefab is open in isolation
+    struct PrefabModeState
+    {
+        Scene scene; // the scene that was open before entering prefab mode
+        std::vector<EntityId> selection;
+        std::deque<Snapshot> undo;
+        std::vector<Snapshot> redo;
+        bool sceneDirty = false;
+        Prefab::Contents saved;
+        bool hasSaved = false;
+    };
+    PrefabModeState m_PrefabMode;
     std::vector<std::string> m_PendingDrops;
     std::string m_ScriptPreviewPath;
     std::string m_ScriptPreview;

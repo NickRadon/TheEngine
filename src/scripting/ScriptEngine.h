@@ -85,6 +85,8 @@ public:
     Scene* GetScene() const { return m_Scene; }
     ScriptInput& Input() { return m_Input; }
     void QueueDestroy(EntityId id) { m_DestroyQueue.push_back(id); }
+    // Creates script instances (Awake) for entities added while playing (Instantiate).
+    void CreateInstances(const std::vector<EntityId>& ids);
 
     static bool WriteScriptTemplate(const std::string& path, const std::string& className);
 

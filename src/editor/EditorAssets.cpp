@@ -1,5 +1,6 @@
 // Project window (real files under Assets/), asset inspector, materials, models and C# script components.
 #include "editor/Editor.h"
+#include "scene/Prefab.h"
 
 #include "core/Log.h"
 #include "core/Platform.h"
@@ -72,6 +73,7 @@ namespace
         if (ResourceCache::IsModelFile(path)) return Icon::Cube;
         if (IsScript(path)) return Icon::File;
         if (IsMaterial(path)) return Icon::Sky;
+        if (Prefab::IsPrefabFile(path)) return Icon::Cube;
         return Icon::File;
     }
 
@@ -356,6 +358,8 @@ void Editor::DrawProject()
         // Drop assets onto a folder to move them.
         if (ImGui::BeginDragDropTarget())
         {
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("ENTITY"))
+                CreatePrefab(*static_cast<const EntityId*>(p->Data), path);
             if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("ASSET"))
             {
                 const fs::path src(static_cast<const char*>(p->Data));
@@ -541,6 +545,7 @@ void Editor::DrawProject()
             else if (IsScene(it.path)) OpenScene(it.path);
             else if (IsScript(it.path) || ResourceCache::IsTextureFile(it.path)) Platform::OpenWithDefaultApp(it.path);
             else if (ResourceCache::IsModelFile(it.path)) InstantiateModel(it.path, kNullEntity, nullptr);
+            else if (Prefab::IsPrefabFile(it.path)) OpenPrefabMode(it.path);
         }
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) m_SelectedAsset = it.path;
         if (ImGui::BeginPopupContextItem("AssetContext"))
@@ -562,6 +567,11 @@ void Editor::DrawProject()
             ImGui::Separator();
             if (ImGui::MenuItem("Show in Explorer")) Platform::RevealInExplorer(it.path);
             if (ResourceCache::IsModelFile(it.path) && ImGui::MenuItem("Add to Scene")) InstantiateModel(it.path, kNullEntity, nullptr);
+            if (Prefab::IsPrefabFile(it.path))
+            {
+                if (ImGui::MenuItem("Open Prefab")) OpenPrefabMode(it.path);
+                if (ImGui::MenuItem("Add to Scene")) InstantiatePrefab(it.path, kNullEntity, nullptr);
+            }
             ImGui::Separator();
             ProjectContextMenu(it.dir ? it.path : m_ProjectFolder);
             ImGui::EndPopup();
@@ -602,6 +612,13 @@ void Editor::DrawProject()
         ImGui::EndPopup();
     }
     ImGui::EndChild();
+    if (ImGui::BeginDragDropTarget())
+    {
+        // Dragging an object from the Hierarchy into the Project window makes a prefab (Unity).
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("ENTITY"))
+            CreatePrefab(*static_cast<const EntityId*>(p->Data), m_ProjectFolder);
+        ImGui::EndDragDropTarget();
+    }
 
     if (!openFolder.empty())
     {
@@ -846,6 +863,36 @@ void Editor::DrawScriptComponent(Entity& e, size_t index, bool& removed)
             EditorUI::PropertyLabel(label.c_str());
             if (ImGui::ColorEdit4("##v", glm::value_ptr(v))) { out << v.r << ' ' << v.g << ' ' << v.b << ' ' << v.a; edited = true; }
         }
+        else if (f.type == "GameObject")
+        {
+            // Object field: drop a prefab from the Project window or an object from the Hierarchy.
+            std::string shown = "None (GameObject)";
+            if (value.rfind("prefab:", 0) == 0) shown = fs::path(value.substr(7)).stem().string() + " (Prefab)";
+            else if (value.rfind("entity:", 0) == 0)
+            {
+                const Entity* target = m_Scene.Find(static_cast<EntityId>(std::strtoull(value.c_str() + 7, nullptr, 10)));
+                shown = target ? target->name : "Missing (GameObject)";
+            }
+            EditorUI::PropertyLabel(label.c_str());
+            const float clearWidth = ImGui::GetFrameHeight();
+            ImGui::Button(shown.c_str(), ImVec2(ImGui::GetContentRegionAvail().x - clearWidth - 4, 0));
+            if (value.rfind("prefab:", 0) == 0 && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                SelectAsset(value.substr(7));
+            if (ImGui::BeginDragDropTarget())
+            {
+                std::string asset;
+                if (AcceptAssetDrop(".prefab", asset)) { out << "prefab:" << asset; edited = true; }
+                else if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("ENTITY"))
+                {
+                    out << "entity:" << *static_cast<const EntityId*>(p->Data);
+                    edited = true;
+                }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::SameLine(0, 4);
+            if (ImGui::Button("x", ImVec2(clearWidth, 0)) && !value.empty()) edited = true; // clears (out stays empty)
+            ImGui::SetItemTooltip("Clear");
+        }
         if (edited)
         {
             newValue = out.str();
@@ -932,6 +979,24 @@ void Editor::DrawAssetInspector()
     else if (IsScene(path))
     {
         if (ImGui::Button("Open Scene", ImVec2(-FLT_MIN, 0))) OpenScene(path);
+    }
+    else if (Prefab::IsPrefabFile(path))
+    {
+        if (const Prefab::Contents* contents = PrefabContents(path))
+        {
+            ImGui::Text("Objects: %d", static_cast<int>(contents->size()));
+            int instances = 0;
+            for (const Entity& e : m_Scene.entities) instances += e.prefab == path ? 1 : 0;
+            ImGui::Text("Instances in this scene: %d", instances);
+            ImGui::Spacing();
+            if (ImGui::Button("Open Prefab", ImVec2(-FLT_MIN, 0))) OpenPrefabMode(path);
+            if (ImGui::Button("Add to Scene", ImVec2(-FLT_MIN, 0))) InstantiatePrefab(path, kNullEntity, nullptr);
+            ImGui::TextDisabled("Drag into the Scene view or Hierarchy to place an instance.");
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(1, 0.4f, 0.35f, 1), "Could not read this prefab.");
+        }
     }
     else if (IsScript(path))
     {

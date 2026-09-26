@@ -53,26 +53,55 @@ namespace TheEngine
         public static void Destroy(GameObject obj) => GameObject.Destroy(obj);
         public static GameObject Instantiate(PrimitiveType type, Vector3 position) =>
             GameObject.CreatePrimitive(type).WithPosition(position);
+        /// <summary>Clones a scene object or spawns a prefab (a GameObject field assigned a .prefab in the Inspector).</summary>
+        public static GameObject Instantiate(GameObject original) => GameObject.Instantiate(original);
+        public static GameObject Instantiate(GameObject original, Vector3 position, Quaternion rotation) =>
+            GameObject.Instantiate(original, position, rotation);
         public static T FindObjectOfType<T>() where T : MonoBehaviour => Internal.ScriptHost.FindInstance<T>();
     }
 
     public sealed unsafe class GameObject
     {
         internal readonly ulong m_Id;
+        internal readonly string m_PrefabPath; // set when this refers to a prefab asset rather than a scene object
         Transform m_Transform;
 
         internal GameObject(ulong id) { m_Id = id; }
+        internal static GameObject FromPrefab(string path) => new GameObject(path, true);
+        GameObject(string prefabPath, bool _) { m_PrefabPath = prefabPath; }
+
+        /// <summary>True for a prefab asset reference (instantiate it to get a scene object).</summary>
+        public bool isPrefab => m_PrefabPath != null;
+
+        public static GameObject Instantiate(GameObject original) => Spawn(original, null, null);
+        public static GameObject Instantiate(GameObject original, Vector3 position, Quaternion rotation) => Spawn(original, position, rotation);
+
+        static GameObject Spawn(GameObject original, Vector3? position, Quaternion? rotation)
+        {
+            if (ReferenceEquals(original, null)) throw new System.ArgumentNullException(nameof(original), "The object you want to instantiate is null.");
+            float* pose = stackalloc float[7];
+            Vector3 p = position ?? Vector3.zero;
+            Quaternion q = rotation ?? Quaternion.identity;
+            pose[0] = p.x; pose[1] = p.y; pose[2] = p.z; pose[3] = q.x; pose[4] = q.y; pose[5] = q.z; pose[6] = q.w;
+            int hasPose = position.HasValue ? 1 : 0;
+            ulong id;
+            if (original.m_PrefabPath != null)
+                fixed (char* path = original.m_PrefabPath) id = Native.Api.PrefabInstantiate(path, pose, hasPose);
+            else
+                id = Native.Api.EntityInstantiate(original.m_Id, pose, hasPose);
+            return id != 0 ? new GameObject(id) : null;
+        }
 
         /// <summary>Creates an empty GameObject in the active scene.</summary>
         public GameObject(string name) { fixed (char* p = name) m_Id = Native.Api.EntityCreate(p, 0); }
 
         public ulong instanceId => m_Id;
-        public bool isValid => Native.Api.EntityExists(m_Id) != 0;
+        public bool isValid => m_PrefabPath != null || Native.Api.EntityExists(m_Id) != 0;
         public Transform transform => m_Transform ??= new Transform(m_Id);
 
         public string name
         {
-            get => Native.GetName(m_Id);
+            get => m_PrefabPath != null ? System.IO.Path.GetFileNameWithoutExtension(m_PrefabPath) : Native.GetName(m_Id);
             set { fixed (char* p = value) Native.Api.EntitySetName(m_Id, p); }
         }
 
@@ -123,10 +152,10 @@ namespace TheEngine
         internal GameObject WithPosition(Vector3 p) { transform.position = p; return this; }
 
         public override string ToString() => name;
-        public override bool Equals(object obj) => obj is GameObject g && g.m_Id == m_Id;
-        public override int GetHashCode() => m_Id.GetHashCode();
+        public override bool Equals(object obj) => obj is GameObject g && g.m_Id == m_Id && g.m_PrefabPath == m_PrefabPath;
+        public override int GetHashCode() => m_PrefabPath?.GetHashCode() ?? m_Id.GetHashCode();
         public static bool operator ==(GameObject a, GameObject b) =>
-            ReferenceEquals(a, null) ? ReferenceEquals(b, null) || !b.isValid : ReferenceEquals(b, null) ? !a.isValid : a.m_Id == b.m_Id;
+            ReferenceEquals(a, null) ? ReferenceEquals(b, null) || !b.isValid : ReferenceEquals(b, null) ? !a.isValid : a.m_Id == b.m_Id && a.m_PrefabPath == b.m_PrefabPath;
         public static bool operator !=(GameObject a, GameObject b) => !(a == b);
     }
 

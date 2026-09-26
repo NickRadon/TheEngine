@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "core/Platform.h"
+#include "scene/Prefab.h"
 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -48,6 +49,8 @@ struct ScriptNativeApi
     void (*RigidbodyAddForce)(uint64_t, const float*, int, int);
     int (*PhysicsRaycast)(const float*, float, float*, uint64_t*);
     void (*PhysicsGravity)(int, float*);
+    uint64_t (*EntityInstantiate)(uint64_t, const float*, int);
+    uint64_t (*PrefabInstantiate)(const wchar_t*, const float*, int);
 };
 
 // Managed entry points (TheEngine.Internal.ScriptHost, [UnmanagedCallersOnly]).
@@ -346,6 +349,51 @@ namespace
         return 1;
     }
 
+    // Places a freshly instantiated root (pose = position xyz + rotation xyzw) and starts its scripts.
+    uint64_t FinishInstantiate(EntityId root, const float* pose, int hasPose)
+    {
+        Scene* s = S();
+        if (!s || !root) return 0;
+        if (hasPose)
+        {
+            Entity* e = s->Find(root);
+            e->parent = kNullEntity;
+            e->transform.position = glm::make_vec3(pose);
+            e->transform.rotation = glm::normalize(glm::quat(pose[6], pose[3], pose[4], pose[5]));
+            e->transform.SyncEulerFromRotation();
+        }
+        std::vector<EntityId> ids{ root };
+        for (const Entity& e : s->entities)
+            if (s->IsAncestor(root, e.id)) ids.push_back(e.id);
+        g_Engine->CreateInstances(ids);
+        return root;
+    }
+
+    uint64_t NEntityInstantiate(uint64_t source, const float* pose, int hasPose)
+    {
+        Scene* s = S();
+        if (!s || !E(source)) return 0;
+        const EntityId copy = s->Duplicate(static_cast<EntityId>(source));
+        if (Entity* e = s->Find(copy)) e->name = E(source)->name + "(Clone)";
+        return FinishInstantiate(copy, pose, hasPose);
+    }
+
+    uint64_t NPrefabInstantiate(const wchar_t* path, const float* pose, int hasPose)
+    {
+        Scene* s = S();
+        if (!s) return 0;
+        const std::string p = Platform::Narrow(path);
+        Prefab::Contents contents;
+        if (!Prefab::Load(p, contents))
+        {
+            LOG_ERROR("Instantiate: could not load prefab %s", p.c_str());
+            return 0;
+        }
+        const EntityId root = Prefab::Instantiate(*s, contents, p, kNullEntity);
+        if (Entity* e = s->Find(root)) e->name += "(Clone)";
+        return FinishInstantiate(root, pose, hasPose);
+    }
+
     void NPhysicsGravity(int set, float* value)
     {
         PhysicsWorld* physics = P();
@@ -464,6 +512,7 @@ bool ScriptEngine::HostRuntime()
         NEntityCreate, NEntityDestroy, NEntityGetParent, NEntitySetParent, NTransformGet, NTransformSet,
         NHasComponent, NComponentGet, NComponentSet, NInputGetKey, NInputGetMouseButton, NInputGetMouse,
         NComponentAdd, NRigidbodyGet, NRigidbodySet, NRigidbodyAddForce, NPhysicsRaycast, NPhysicsGravity,
+        NEntityInstantiate, NPrefabInstantiate,
     };
     return m_Api->Initialize(&g_NativeApi) == 1;
 #else
@@ -677,6 +726,14 @@ void ScriptEngine::BeginPlay(Scene* scene)
     // Copy the ids first: Awake may create entities.
     std::vector<EntityId> ids;
     for (const Entity& e : scene->entities) ids.push_back(e.id);
+    CreateInstances(ids);
+    FlushDestroyQueue();
+}
+
+void ScriptEngine::CreateInstances(const std::vector<EntityId>& ids)
+{
+    Scene* scene = m_Scene;
+    if (!m_Playing || !scene) return;
     for (EntityId id : ids)
     {
         const Entity* e = scene->Find(id);
@@ -696,7 +753,6 @@ void ScriptEngine::BeginPlay(Scene* scene)
             if (!e) break;
         }
     }
-    FlushDestroyQueue();
 }
 
 void ScriptEngine::Tick(float dt, float time, int frame)

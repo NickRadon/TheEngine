@@ -360,7 +360,7 @@ namespace TheEngine.Internal
 
         static string TypeName(Type t) =>
             t == typeof(float) ? "float" : t == typeof(int) ? "int" : t == typeof(bool) ? "bool" : t == typeof(string) ? "string" :
-            t == typeof(Vector3) ? "Vector3" : t == typeof(Color) ? "Color" : null;
+            t == typeof(Vector3) ? "Vector3" : t == typeof(Color) ? "Color" : t == typeof(GameObject) ? "GameObject" : null;
 
         static string Format(object v)
         {
@@ -373,6 +373,8 @@ namespace TheEngine.Internal
                 case string s: return s;
                 case Vector3 v3: return string.Format(c, "{0:R} {1:R} {2:R}", v3.x, v3.y, v3.z);
                 case Color col: return string.Format(c, "{0:R} {1:R} {2:R} {3:R}", col.r, col.g, col.b, col.a);
+                // Object references: "prefab:<asset path>" or "entity:<id>".
+                case GameObject g: return g.m_PrefabPath != null ? "prefab:" + g.m_PrefabPath : g.isValid ? "entity:" + g.m_Id.ToString(c) : "";
                 default: return "";
             }
         }
@@ -402,6 +404,13 @@ namespace TheEngine.Internal
                 else if (f.FieldType == typeof(string)) f.SetValue(behaviour, value);
                 else if (f.FieldType == typeof(Vector3)) f.SetValue(behaviour, new Vector3(P(0), P(1), P(2)));
                 else if (f.FieldType == typeof(Color)) f.SetValue(behaviour, new Color(P(0), P(1), P(2), parts.Length > 3 ? P(3) : 1f));
+                else if (f.FieldType == typeof(GameObject))
+                {
+                    GameObject g = null;
+                    if (value.StartsWith("prefab:")) g = GameObject.FromPrefab(value.Substring(7));
+                    else if (value.StartsWith("entity:") && ulong.TryParse(value.Substring(7), NumberStyles.Integer, c, out ulong id)) g = new GameObject(id);
+                    f.SetValue(behaviour, g);
+                }
             }
             catch (Exception e) { Report($"Setting {name}", e); }
         }
