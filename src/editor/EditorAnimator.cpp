@@ -57,6 +57,7 @@ void Editor::OpenAnimatorController(const std::string& path)
     m_AnimLinkFrom.clear();
     m_FocusAnimator = true;
     m_AnimFrameRequest = true; // fit the graph once the canvas size is known
+    m_AnimLayer = 0;
 }
 
 AnimatorController* Editor::EditedController()
@@ -67,6 +68,7 @@ AnimatorController* Editor::EditedController()
 void Editor::SaveEditedController()
 {
     AnimatorController* c = EditedController();
+    if (c && m_AnimLayer >= static_cast<int>(c->layers.size())) m_AnimLayer = 0;
     if (!c) return;
     if (c->Save(m_AnimCtrlPath)) m_Animation.ControllerEdited(m_AnimCtrlPath);
     else LOG_ERROR("Could not save %s", m_AnimCtrlPath.c_str());
@@ -238,13 +240,16 @@ void Editor::DrawAnimator()
         if (ImGui::InputText("##name", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue) && name[0] && c->FindParam(name) < 0)
         {
             // Keep conditions and blend trees pointing at the renamed parameter.
-            for (AnimTransition& t : c->transitions)
-                for (AnimCondition& cond : t.conditions)
-                    if (cond.param == p.name) cond.param = name;
-            for (AnimState& s : c->states)
+            for (AnimLayer& layer : c->layers)
             {
-                if (s.paramX == p.name) s.paramX = name;
-                if (s.paramY == p.name) s.paramY = name;
+                for (AnimTransition& t : layer.transitions)
+                    for (AnimCondition& cond : t.conditions)
+                        if (cond.param == p.name) cond.param = name;
+                for (AnimState& s : layer.states)
+                {
+                    if (s.paramX == p.name) s.paramX = name;
+                    if (s.paramY == p.name) s.paramY = name;
+                }
             }
             p.name = name;
             m_AnimCtrlDirty = true;
@@ -300,6 +305,101 @@ void Editor::DrawAnimator()
         m_AnimCtrlDirty = true;
     }
     if (c->params.empty()) ImGui::TextDisabled("No parameters. Use + to add one.");
+
+    // Layers (Unity's Layers tab): the base layer is the whole body; others blend over it inside their mask.
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextUnformatted("Layers");
+    ImGui::SameLine(leftW - 36);
+    if (ImGui::SmallButton("+##layer"))
+    {
+        AnimLayer layer;
+        layer.name = "New Layer";
+        for (int n = 1; std::any_of(c->layers.begin(), c->layers.end(), [&](const AnimLayer& l) { return l.name == layer.name; }); ++n)
+            layer.name = "New Layer " + std::to_string(n);
+        c->layers.push_back(layer);
+        m_AnimLayer = static_cast<int>(c->layers.size()) - 1;
+        m_AnimSelState.clear();
+        m_AnimSelTransition = -1;
+        m_AnimFrameRequest = true;
+        m_AnimCtrlDirty = true;
+    }
+    ImGui::Separator();
+    int removeLayer = -1;
+    for (size_t i = 0; i < c->layers.size(); ++i)
+    {
+        ImGui::PushID(static_cast<int>(i) + 5000);
+        const AnimLayer& l = c->layers[i];
+        char label[96];
+        std::snprintf(label, sizeof(label), "%s%s", l.name.c_str(), i == 0 ? "" : l.blending == AnimLayerBlending::Additive ? "  (additive)" : "");
+        if (ImGui::Selectable(label, m_AnimLayer == static_cast<int>(i)))
+        {
+            m_AnimLayer = static_cast<int>(i);
+            m_AnimSelState.clear();
+            m_AnimSelTransition = -1;
+            m_AnimFrameRequest = true;
+        }
+        if (i > 0 && ImGui::BeginPopupContextItem("LayerContext"))
+        {
+            if (ImGui::MenuItem("Delete Layer")) removeLayer = static_cast<int>(i);
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    if (removeLayer > 0)
+    {
+        c->layers.erase(c->layers.begin() + removeLayer);
+        m_AnimLayer = 0;
+        m_AnimCtrlDirty = true;
+    }
+    AnimLayer& layer = c->layers[m_AnimLayer];
+    ImGui::Spacing();
+    char layerName[64];
+    std::snprintf(layerName, sizeof(layerName), "%s", layer.name.c_str());
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputText("##layerName", layerName, sizeof(layerName), ImGuiInputTextFlags_EnterReturnsTrue) && layerName[0])
+    {
+        layer.name = layerName;
+        m_AnimCtrlDirty = true;
+    }
+    if (m_AnimLayer > 0)
+    {
+        float weight = instance ? instance->LayerWeight(m_AnimLayer) : layer.weight;
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::SliderFloat("##layerWeight", &weight, 0.0f, 1.0f, "Weight %.2f"))
+        {
+            if (instance) instance->SetLayerWeight(m_AnimLayer, weight);
+            else { layer.weight = weight; m_AnimCtrlDirty = true; }
+        }
+        int blending = static_cast<int>(layer.blending);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##blending", &blending, "Override Additive ")) { layer.blending = static_cast<AnimLayerBlending>(blending); m_AnimCtrlDirty = true; }
+        // Avatar mask: bones whose subtrees the layer drives (comma separated, empty = whole body).
+        std::string mask;
+        for (const std::string& b : layer.mask) mask += (mask.empty() ? "" : ", ") + b;
+        char maskText[256];
+        std::snprintf(maskText, sizeof(maskText), "%s", mask.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputTextWithHint("##mask", "Mask bones (e.g. spine_01)", maskText, sizeof(maskText), ImGuiInputTextFlags_EnterReturnsTrue))
+        {
+            layer.mask.clear();
+            std::string token;
+            for (const char* p = maskText; ; ++p)
+            {
+                if (*p == ',' || *p == 0)
+                {
+                    while (!token.empty() && token.back() == ' ') token.pop_back();
+                    size_t start = token.find_first_not_of(' ');
+                    if (start != std::string::npos) layer.mask.push_back(token.substr(start));
+                    token.clear();
+                    if (!*p) break;
+                }
+                else token += *p;
+            }
+            m_AnimCtrlDirty = true;
+        }
+        ImGui::SetItemTooltip("Bones whose subtrees this layer animates, e.g. \"spine_01\" for the upper body. Empty = whole body.");
+    }
     ImGui::EndChild();
 
     ImGui::SameLine();
@@ -318,8 +418,9 @@ void Editor::DrawAnimator()
 // ---------------------------------------------------------------------------
 // Graph canvas
 // ---------------------------------------------------------------------------
-void Editor::DrawAnimatorGraph(AnimatorController& c, AnimatorInstance* instance, ImVec2 size)
+void Editor::DrawAnimatorGraph(AnimatorController& ctrl, AnimatorInstance* instance, ImVec2 size)
 {
+    AnimLayer& c = ctrl.layers[m_AnimLayer];
     ImGui::BeginChild("##graph", size, ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -430,8 +531,8 @@ void Editor::DrawAnimatorGraph(AnimatorController& c, AnimatorInstance* instance
         const bool selected = m_AnimSelTransition == static_cast<int>(i);
         const bool over = hovered && SegmentDistance(mouse, a, b) < 5.0f && nodeAt(mouse).empty();
         if (over) hoveredTransition = static_cast<int>(i);
-        const bool active = instance && instance->NextState() >= 0 && instance->Controller()->states[instance->NextState()].name == t.to &&
-                            (t.from == kAny || (instance->CurrentState() >= 0 && instance->Controller()->states[instance->CurrentState()].name == t.from));
+        const bool active = instance && instance->NextState(m_AnimLayer) >= 0 && instance->Controller()->layers[m_AnimLayer].states[instance->NextState(m_AnimLayer)].name == t.to &&
+                            (t.from == kAny || (instance->CurrentState(m_AnimLayer) >= 0 && instance->Controller()->layers[m_AnimLayer].states[instance->CurrentState(m_AnimLayer)].name == t.from));
         arrow(a, b, selected ? Col(88, 160, 255) : active ? Col(80, 180, 255) : over ? Col(230, 230, 230) : Col(200, 200, 200), selected ? 3.0f : 2.0f);
     }
     // Entry -> default state
@@ -481,10 +582,10 @@ void Editor::DrawAnimatorGraph(AnimatorController& c, AnimatorInstance* instance
         float progress = -1.0f;
         if (instance)
         {
-            if (instance->CurrentState() == static_cast<int>(i))
-                progress = s.loop ? instance->CurrentNormalizedTime() - std::floor(instance->CurrentNormalizedTime())
-                                  : std::min(instance->CurrentNormalizedTime(), 1.0f);
-            else if (instance->NextState() == static_cast<int>(i)) progress = instance->TransitionProgress();
+            if (instance->CurrentState(m_AnimLayer) == static_cast<int>(i))
+                progress = s.loop ? instance->CurrentNormalizedTime(m_AnimLayer) - std::floor(instance->CurrentNormalizedTime(m_AnimLayer))
+                                  : std::min(instance->CurrentNormalizedTime(m_AnimLayer), 1.0f);
+            else if (instance->NextState(m_AnimLayer) == static_cast<int>(i)) progress = instance->TransitionProgress(m_AnimLayer);
         }
         const char* subtitle = s.type == AnimMotionType::BlendTree2D ? "Blend Tree 2D" : s.type == AnimMotionType::BlendTree1D ? "Blend Tree 1D" : nullptr;
         drawNode(s.name, s.name, s.position, isDefault ? Col(194, 100, 26) : Col(72, 72, 72), m_AnimSelState == s.name, progress, subtitle);
@@ -553,7 +654,7 @@ void Editor::DrawAnimatorGraph(AnimatorController& c, AnimatorInstance* instance
         s.position = m_AnimContextPos;
         if (type == AnimMotionType::BlendTree1D || type == AnimMotionType::BlendTree2D)
         {
-            for (const AnimParam& p : c.params)
+            for (const AnimParam& p : ctrl.params)
                 if (p.type == AnimParamType::Float)
                 {
                     if (s.paramX.empty()) s.paramX = p.name;
@@ -653,11 +754,12 @@ void Editor::DrawAnimatorGraph(AnimatorController& c, AnimatorInstance* instance
 // ---------------------------------------------------------------------------
 // Properties of the selected state / transition
 // ---------------------------------------------------------------------------
-void Editor::DrawAnimatorSelection(AnimatorController& c, AnimatorInstance* instance)
+void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* instance)
 {
+    AnimLayer& c = ctrl.layers[m_AnimLayer];
     auto floatParams = [&]() {
         std::vector<std::string> names;
-        for (const AnimParam& p : c.params)
+        for (const AnimParam& p : ctrl.params)
             if (p.type == AnimParamType::Float || p.type == AnimParamType::Int) names.push_back(p.name);
         return names;
     };
@@ -695,12 +797,12 @@ void Editor::DrawAnimatorSelection(AnimatorController& c, AnimatorInstance* inst
         {
             AnimCondition& cond = t.conditions[i];
             ImGui::PushID(static_cast<int>(i));
-            const int pi = c.FindParam(cond.param);
-            const AnimParamType type = pi >= 0 ? c.params[pi].type : AnimParamType::Float;
+            const int pi = ctrl.FindParam(cond.param);
+            const AnimParamType type = pi >= 0 ? ctrl.params[pi].type : AnimParamType::Float;
             ImGui::SetNextItemWidth(110);
             if (ImGui::BeginCombo("##param", cond.param.empty() ? "(param)" : cond.param.c_str()))
             {
-                for (const AnimParam& p : c.params)
+                for (const AnimParam& p : ctrl.params)
                     if (ImGui::Selectable(p.name.c_str(), p.name == cond.param))
                     {
                         cond.param = p.name;
@@ -740,10 +842,10 @@ void Editor::DrawAnimatorSelection(AnimatorController& c, AnimatorInstance* inst
         if (ImGui::SmallButton("+ Condition"))
         {
             AnimCondition cond;
-            if (!c.params.empty())
+            if (!ctrl.params.empty())
             {
-                cond.param = c.params[0].name;
-                if (c.params[0].type == AnimParamType::Bool || c.params[0].type == AnimParamType::Trigger) cond.mode = AnimConditionMode::If;
+                cond.param = ctrl.params[0].name;
+                if (ctrl.params[0].type == AnimParamType::Bool || ctrl.params[0].type == AnimParamType::Trigger) cond.mode = AnimConditionMode::If;
             }
             t.conditions.push_back(cond);
             m_AnimCtrlDirty = true;

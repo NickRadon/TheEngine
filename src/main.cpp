@@ -72,29 +72,42 @@ namespace
 int main(int argc, char** argv)
 {
     bool selfTest = false;
-    float playtest = 0.0f;
+    float playtest = 0.0f, mouseDX = 0.0f, mouseDY = 0.0f;
     std::vector<int> heldKeys;
+    std::vector<std::pair<int, float>> pressedKeys;
     std::string captureDir, projectArg;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
         if (arg == "--selftest") selfTest = true;
         else if (arg == "--playtest" && i + 1 < argc) playtest = static_cast<float>(std::atof(argv[++i]));
-        else if (arg == "--hold" && i + 1 < argc)
+        else if (arg == "--mouse" && i + 1 < argc) std::sscanf(argv[++i], "%f,%f", &mouseDX, &mouseDY);
+        else if ((arg == "--hold" || arg == "--press") && i + 1 < argc)
         {
-            // Unity KeyCode names or numbers, comma separated (e.g. W,LeftShift).
+            // Unity KeyCode names or numbers, comma separated (e.g. W,LeftShift). --press entries take a start time
+            // in seconds (e.g. C@1.5,Space@3) and are tapped for 0.1 s so scripts see GetKeyDown/GetKeyUp.
             static const std::pair<const char*, int> names[] = { { "W", 119 }, { "A", 97 }, { "S", 115 }, { "D", 100 }, { "Q", 113 },
-                { "E", 101 }, { "Space", 32 }, { "LeftShift", 304 }, { "LeftControl", 306 }, { "Mouse1", 324 } };
+                { "E", 101 }, { "C", 99 }, { "F", 102 }, { "I", 105 }, { "M", 109 }, { "R", 114 }, { "V", 118 }, { "Space", 32 },
+                { "LeftShift", 304 }, { "LeftControl", 306 }, { "Mouse0", 323 }, { "Mouse1", 324 }, { "Mouse2", 325 },
+                { "Mouse3", 326 }, { "Mouse4", 327 } };
+            const bool press = arg == "--press";
             std::string list = argv[++i];
             size_t start = 0;
             while (start <= list.size())
             {
                 const size_t comma = list.find(',', start);
-                const std::string key = list.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                std::string key = list.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                float at = 0.0f;
+                if (const size_t sep = key.find('@'); sep != std::string::npos)
+                {
+                    at = static_cast<float>(std::atof(key.c_str() + sep + 1));
+                    key.resize(sep);
+                }
                 int code = std::atoi(key.c_str());
                 for (auto& [n, c] : names)
                     if (key == n) code = c;
-                if (code > 0) heldKeys.push_back(code);
+                if (code > 0 && press) pressedKeys.push_back({ code, at });
+                else if (code > 0) heldKeys.push_back(code);
                 if (comma == std::string::npos) break;
                 start = comma + 1;
             }
@@ -247,7 +260,8 @@ int main(int argc, char** argv)
     g_Editor = &editor;
     editor.Init(&vk, &renderer, &resources, &scripts, window);
     if (selfTest) editor.EnableSelfTest(captureDir);
-    if (playtest > 0.0f) editor.EnablePlaytest(playtest, heldKeys, captureDir);
+    if (playtest > 0.0f) editor.EnablePlaytest(playtest, heldKeys, pressedKeys, captureDir);
+    if (playtest > 0.0f) editor.SetPlaytestMouse(mouseDX, mouseDY);
 
     while (!glfwWindowShouldClose(window) && !editor.WantsQuit())
     {

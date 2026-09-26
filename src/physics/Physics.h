@@ -65,6 +65,11 @@ public:
     void AddForce(EntityId id, const glm::vec3& force, ForceMode mode);
     void AddTorque(EntityId id, const glm::vec3& torque, ForceMode mode);
 
+    // CharacterController (Jolt CharacterVirtual). Move returns Unity CollisionFlags (1 sides, 2 above, 4 below).
+    int CharacterMove(EntityId id, const glm::vec3& motion, float dt);
+    bool CharacterGrounded(EntityId id);
+    glm::vec3 CharacterVelocity(EntityId id);
+
     glm::vec3 gravity{ 0.0f, -9.81f, 0.0f };
     float fixedDeltaTime = 0.02f;
     int BodyCount() const;

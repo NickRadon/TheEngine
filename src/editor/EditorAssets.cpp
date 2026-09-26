@@ -871,6 +871,24 @@ void Editor::DrawScriptComponent(Entity& e, size_t index, bool& removed)
             EditorUI::PropertyLabel(label.c_str());
             if (ImGui::ColorEdit4("##v", glm::value_ptr(v))) { out << v.r << ' ' << v.g << ' ' << v.b << ' ' << v.a; edited = true; }
         }
+        else if (f.type == "ScriptableObject")
+        {
+            EditorUI::PropertyLabel(label.c_str());
+            const float clearWidth = ImGui::GetFrameHeight();
+            const std::string shown = value.empty() ? "None (Asset)" : fs::path(value).stem().string() + " (Asset)";
+            ImGui::Button(shown.c_str(), ImVec2(ImGui::GetContentRegionAvail().x - clearWidth - 4, 0));
+            if (!value.empty() && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                SelectAsset(value);
+            if (ImGui::BeginDragDropTarget())
+            {
+                std::string asset;
+                if (AcceptAssetDrop(".asset", asset) || AcceptAssetDrop(".json", asset))
+                { out << asset; edited = true; }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::SameLine(0, 4);
+            if (ImGui::Button("x", ImVec2(clearWidth, 0)) && !value.empty()) edited = true;
+        }
         else if (f.type == "GameObject")
         {
             // Object field: drop a prefab from the Project window or an object from the Hierarchy.
@@ -999,8 +1017,10 @@ void Editor::DrawAssetInspector()
     {
         if (AnimatorController* c = m_Animation.Controller(path))
         {
-            ImGui::Text("States: %d   Parameters: %d   Transitions: %d", static_cast<int>(c->states.size()), static_cast<int>(c->params.size()),
-                        static_cast<int>(c->transitions.size()));
+            size_t states = 0, transitions = 0;
+            for (const AnimLayer& l : c->layers) { states += l.states.size(); transitions += l.transitions.size(); }
+            ImGui::Text("Layers: %d   States: %d   Parameters: %d   Transitions: %d", static_cast<int>(c->layers.size()), static_cast<int>(states),
+                        static_cast<int>(c->params.size()), static_cast<int>(transitions));
             if (ImGui::Button("Open in Animator", ImVec2(-FLT_MIN, 0))) OpenAnimatorController(path);
             ImGui::TextDisabled("Drag onto an Animator component's Controller field.");
         }

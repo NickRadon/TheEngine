@@ -796,8 +796,8 @@ void Editor::EnableSelfTest(const std::string& captureDir)
         move.paramX = "X";
         move.paramY = "Y";
         move.children = { { "test:fwd", 0, { 0, 1 } }, { "test:right", 0, { 1, 0 } }, { "test:bwd", 0, { 0, -1 } }, { "test:left", 0, { -1, 0 } } };
-        c.states = { idle, move };
-        c.defaultState = "Idle";
+        c.Base().states = { idle, move };
+        c.Base().defaultState = "Idle";
         AnimTransition go;
         go.from = "Idle";
         go.to = "Move";
@@ -808,14 +808,15 @@ void Editor::EnableSelfTest(const std::string& captureDir)
         stop.to = "Idle";
         stop.duration = 0.0f;
         stop.conditions = { { "Stop", AnimConditionMode::If, 0.0f } };
-        c.transitions = { go, stop };
+        c.Base().transitions = { go, stop };
 
         // Save / load round trip.
         const std::string path = "Assets/_test.controller";
         AnimatorController loaded;
-        const bool io = c.Save(path) && AnimatorController::IsControllerFile(path) && loaded.Load(path) && loaded.states.size() == 2 &&
-                        loaded.states[1].children.size() == 4 && loaded.transitions.size() == 2 && loaded.transitions[1].from == AnimatorController::kAnyState &&
-                        loaded.params[3].type == AnimParamType::Trigger && loaded.defaultState == "Idle";
+        const bool io = c.Save(path) && AnimatorController::IsControllerFile(path) && loaded.Load(path) && loaded.Base().states.size() == 2 &&
+                        loaded.Base().states[1].children.size() == 4 && loaded.Base().transitions.size() == 2 &&
+                        loaded.Base().transitions[1].from == AnimatorController::kAnyState && loaded.params[3].type == AnimParamType::Trigger &&
+                        loaded.Base().defaultState == "Idle";
         t.Check(io, "Animator Controller assets save and load (states, blend trees, transitions, parameters)");
         std::error_code ec;
         std::filesystem::remove(path, ec);

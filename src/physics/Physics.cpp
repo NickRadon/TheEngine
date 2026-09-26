@@ -9,6 +9,7 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
@@ -195,6 +196,15 @@ struct PhysicsWorld::Impl
     Scene* scene = nullptr;
     MeshProvider meshes;
     std::unordered_map<EntityId, BodyRecord> bodies;
+    struct CharacterRecord
+    {
+        Ref<CharacterVirtual> character;
+        std::string signature;
+        glm::vec3 position{ 0.0f }; // entity world position after the last Move (teleports are detected)
+        glm::vec3 velocity{ 0.0f };
+        bool grounded = false;
+    };
+    std::unordered_map<EntityId, CharacterRecord> characters;
     float accumulator = 0.0f;
     float fixedDt = 0.02f;
 
@@ -422,6 +432,49 @@ struct PhysicsWorld::Impl
         }
     }
 
+    CharacterRecord* Character(EntityId id)
+    {
+        if (!scene || !system) return nullptr;
+        const Entity* e = scene->Find(id);
+        if (!e || !e->characterController.enabled)
+        {
+            characters.erase(id);
+            return nullptr;
+        }
+        glm::vec3 pos, scale;
+        glm::quat rot;
+        Decompose(scene->WorldMatrix(id), pos, rot, scale);
+        const CharacterControllerComponent& cc = e->characterController;
+        char sig[128];
+        std::snprintf(sig, sizeof(sig), "%.4f %.4f %.4f %.4f %.4f %.3f %.3f", cc.height, cc.radius, cc.center.x, cc.center.y, cc.center.z,
+                      cc.slopeLimit, scale.y);
+        auto it = characters.find(id);
+        if (it == characters.end() || it->second.signature != sig)
+        {
+            // Capsule standing on the object's origin (offset by center), like Unity's CharacterController.
+            const float radius = std::max(cc.radius * std::max(scale.x, scale.z), 0.01f);
+            const float halfCylinder = std::max(cc.height * scale.y * 0.5f - radius, 0.01f);
+            Ref<CharacterVirtualSettings> settings = new CharacterVirtualSettings();
+            settings->mShape = RotatedTranslatedShapeSettings(ToJ(cc.center * scale), Quat::sIdentity(), new CapsuleShape(halfCylinder, radius)).Create().Get();
+            settings->mMaxSlopeAngle = glm::radians(std::clamp(cc.slopeLimit, 1.0f, 89.0f));
+            const float bottom = cc.center.y * scale.y - cc.height * scale.y * 0.5f;
+            settings->mSupportingVolume = Plane(Vec3::sAxisY(), -(bottom + radius)); // contacts below the lower sphere's center support
+            settings->mCharacterPadding = 0.02f;
+            CharacterRecord rec;
+            rec.character = new CharacterVirtual(settings, RVec3(ToJ(pos)), Quat::sIdentity(), 0, system.get());
+            rec.signature = sig;
+            rec.position = pos;
+            it = characters.insert_or_assign(id, rec).first;
+        }
+        CharacterRecord& rec = it->second;
+        if (glm::distance(rec.position, pos) > 1e-4f) // moved by the editor or a script: teleport
+        {
+            rec.character->SetPosition(RVec3(ToJ(pos)));
+            rec.position = pos;
+        }
+        return &rec;
+    }
+
     BodyRecord* Ensure(EntityId id)
     {
         if (!scene || !system) return nullptr;
@@ -471,6 +524,7 @@ void PhysicsWorld::Begin(Scene* scene, MeshProvider meshes)
 void PhysicsWorld::End()
 {
     if (!m->system) return;
+    m->characters.clear();
     std::vector<EntityId> ids;
     for (auto& [id, rec] : m->bodies) ids.push_back(id);
     for (EntityId id : ids) m->RemoveBody(id);
@@ -524,6 +578,61 @@ bool PhysicsWorld::Raycast(const glm::vec3& origin, const glm::vec3& direction, 
         hit.normal = ToG(body.GetWorldSpaceSurfaceNormal(result.mSubShapeID2, point));
     }
     return true;
+}
+
+int PhysicsWorld::CharacterMove(EntityId id, const glm::vec3& motion, float dt)
+{
+    auto* rec = m->Character(id);
+    if (!rec || dt <= 0.0f) return 0;
+    const Entity* e = m->scene->Find(id);
+    CharacterVirtual& c = *rec->character;
+    c.SetLinearVelocity(ToJ(motion / dt));
+    CharacterVirtual::ExtendedUpdateSettings update;
+    update.mStickToFloorStepDown = Vec3(0.0f, -std::max(e->characterController.stepOffset, 0.05f), 0.0f);
+    update.mWalkStairsStepUp = Vec3(0.0f, std::max(e->characterController.stepOffset, 0.0f), 0.0f);
+    // A character only collides with the world (not with itself); sensors are ignored like Unity's triggers.
+    BroadPhaseLayerFilter bpFilter;
+    ObjectLayerFilter layerFilter;
+    class NoSensors final : public BodyFilter
+    {
+    public:
+        bool ShouldCollideLocked(const Body& body) const override { return !body.IsSensor(); }
+    } bodyFilter;
+    ShapeFilter shapeFilter;
+    const glm::vec3 before = rec->position;
+    c.ExtendedUpdate(dt, ToJ(gravity), update, bpFilter, layerFilter, bodyFilter, shapeFilter, *g_Temp);
+
+    const RVec3 p = c.GetPosition();
+    const glm::vec3 after(static_cast<float>(p.GetX()), static_cast<float>(p.GetY()), static_cast<float>(p.GetZ()));
+    rec->velocity = (after - before) / dt;
+    rec->grounded = c.GetGroundState() == CharacterBase::EGroundState::OnGround;
+    // Write the new position back (keeping rotation / scale).
+    glm::mat4 world = m->scene->WorldMatrix(id);
+    world[3] = glm::vec4(after, 1.0f);
+    m->scene->SetWorldMatrix(id, world);
+    rec->position = after;
+
+    int flags = rec->grounded ? 4 : 0;
+    for (const CharacterContact& contact : c.GetActiveContacts())
+    {
+        if (!contact.mHadCollision) continue;
+        const float ny = contact.mSurfaceNormal.GetY();
+        if (ny < -0.5f) flags |= 2;
+        else if (ny < 0.5f) flags |= 1;
+    }
+    return flags;
+}
+
+bool PhysicsWorld::CharacterGrounded(EntityId id)
+{
+    auto* rec = m->Character(id);
+    return rec && rec->grounded;
+}
+
+glm::vec3 PhysicsWorld::CharacterVelocity(EntityId id)
+{
+    auto* rec = m->Character(id);
+    return rec ? rec->velocity : glm::vec3(0.0f);
 }
 
 glm::vec3 PhysicsWorld::GetVelocity(EntityId id)

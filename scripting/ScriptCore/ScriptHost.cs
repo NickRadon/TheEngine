@@ -46,7 +46,7 @@ namespace TheEngine.Internal
         {
             public MonoBehaviour Behaviour;
             public ulong Entity;
-            public Action Awake, Start, Update, LateUpdate, FixedUpdate, OnDestroy;
+            public Action Awake, Start, Update, LateUpdate, FixedUpdate, OnDestroy, OnAnimatorMove;
             public Action<Collision> OnCollisionEnter, OnCollisionExit;
             public Action<Collider> OnTriggerEnter, OnTriggerExit;
             public bool Started;
@@ -186,6 +186,20 @@ namespace TheEngine.Internal
                 if (i.Started && i.Behaviour.enabled && IsAlive(i)) Invoke(i.Update, i.Behaviour, "Update");
         }
 
+        /// <summary>OnAnimatorMove on the animated object's scripts. Returns 1 when one exists (it then owns the root motion).</summary>
+        [UnmanagedCallersOnly]
+        public static int DispatchAnimatorMove(ulong entity)
+        {
+            int handled = 0;
+            foreach (Instance i in s_Instances.Values.Where(x => x.Entity == entity && x.OnAnimatorMove != null).ToList())
+            {
+                if (!i.Started || !i.Behaviour.enabled || !IsAlive(i)) continue;
+                handled = 1;
+                Invoke(i.OnAnimatorMove, i.Behaviour, "OnAnimatorMove");
+            }
+            return handled;
+        }
+
         /// <summary>LateUpdate runs after animation (root motion) has been applied, like Unity.</summary>
         [UnmanagedCallersOnly]
         public static void LateTick()
@@ -297,6 +311,7 @@ namespace TheEngine.Internal
                 Update = Bind(behaviour, type, "Update"),
                 LateUpdate = Bind(behaviour, type, "LateUpdate"),
                 FixedUpdate = Bind(behaviour, type, "FixedUpdate"),
+                OnAnimatorMove = Bind(behaviour, type, "OnAnimatorMove"),
                 OnCollisionEnter = Bind<Collision>(behaviour, type, "OnCollisionEnter"),
                 OnCollisionExit = Bind<Collision>(behaviour, type, "OnCollisionExit"),
                 OnTriggerEnter = Bind<Collider>(behaviour, type, "OnTriggerEnter"),
@@ -366,7 +381,8 @@ namespace TheEngine.Internal
 
         static string TypeName(Type t) =>
             t == typeof(float) ? "float" : t == typeof(int) ? "int" : t == typeof(bool) ? "bool" : t == typeof(string) ? "string" :
-            t == typeof(Vector3) ? "Vector3" : t == typeof(Color) ? "Color" : t == typeof(GameObject) ? "GameObject" : null;
+            t == typeof(Vector3) ? "Vector3" : t == typeof(Color) ? "Color" : t == typeof(GameObject) ? "GameObject" :
+            typeof(ScriptableObject).IsAssignableFrom(t) ? "ScriptableObject" : null;
 
         static string Format(object v)
         {
@@ -381,6 +397,7 @@ namespace TheEngine.Internal
                 case Color col: return string.Format(c, "{0:R} {1:R} {2:R} {3:R}", col.r, col.g, col.b, col.a);
                 // Object references: "prefab:<asset path>" or "entity:<id>".
                 case GameObject g: return g.m_PrefabPath != null ? "prefab:" + g.m_PrefabPath : g.isValid ? "entity:" + g.m_Id.ToString(c) : "";
+                case ScriptableObject a: return a.assetPath ?? "";
                 default: return "";
             }
         }
@@ -417,6 +434,8 @@ namespace TheEngine.Internal
                     else if (value.StartsWith("entity:") && ulong.TryParse(value.Substring(7), NumberStyles.Integer, c, out ulong id)) g = new GameObject(id);
                     f.SetValue(behaviour, g);
                 }
+                else if (typeof(ScriptableObject).IsAssignableFrom(f.FieldType))
+                    f.SetValue(behaviour, ScriptableObject.Load(f.FieldType, value));
             }
             catch (Exception e) { Report($"Setting {name}", e); }
         }

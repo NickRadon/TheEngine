@@ -72,6 +72,11 @@ struct AnimationClip
     bool hasRootMotion = false; // the root bone travels or turns
     float averageSpeed = 0.0f;  // m/s over the clip (for the editor)
 
+    // Float curves keyed by name, each a list of (seconds, value), read from the Unity .anim beside the clip file
+    // (e.g. properties authored alongside imported animation clips).
+    std::unordered_map<std::string, std::vector<glm::vec2>> floatCurves;
+    bool SampleFloat(const std::string& name, float seconds, float& value) const;
+
     BoneTransform SampleTrack(int track, float time) const;
     // Planar root position/yaw at a time (interpolated).
     void SampleRoot(float time, glm::vec2& xz, float& yaw) const;
@@ -81,6 +86,7 @@ struct AnimationClip
 struct ClipBinding
 {
     std::vector<int> trackForBone; // -1 = keep rest pose
+    std::vector<uint8_t> animatedTranslation; // IK / marker bones whose clip translation is used as authored
     float pelvisScale = 1.0f;       // target / source hip height
 };
 ClipBinding BindClip(const AnimationClip& clip, const Skeleton& skeleton);
@@ -99,6 +105,7 @@ class ClipLibrary
 public:
     const AnimationClip* Get(const std::string& ref);
     const ClipBinding& Binding(const AnimationClip* clip, const Skeleton* skeleton);
+    void ForgetSkeleton(const Skeleton* skeleton);
     std::vector<std::string> TakeNames(const std::string& path); // animation stacks in a file
     void Invalidate(const std::string& path);
     void Add(const std::string& ref, const AnimationClip& clip) { m_Clips[ref] = std::make_unique<AnimationClip>(clip); } // tests / generated clips

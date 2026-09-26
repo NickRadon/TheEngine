@@ -58,6 +58,7 @@ bool Editor::Init(VulkanContext* vk, SceneRenderer* renderer, ResourceCache* res
     m_Animation.Init(m_Res);
     m_Scripts->SetAnimation(&m_Animation);
     m_Renderer->SetPaletteProvider([this](EntityId id) { return m_Animation.Palette(id); });
+    m_Animation.onAnimatorMove = [this](EntityId id) { return m_Scripts->DispatchAnimatorMove(id); };
     ScanAssets();
     m_Scripts->RequestCompile();
 
@@ -135,6 +136,7 @@ void Editor::Update(float dt)
 
     UpdatePlayMode(dt);
     if (!m_Playing) m_Animation.Update(m_Scene, dt, false); // edit mode: pose preview (default state)
+    UpdateCursor();
     HandleShortcuts();
 
     DrawMainMenu();
@@ -1092,7 +1094,7 @@ void Editor::GatherScriptInput()
     for (auto& [code, key] : keys) set(code, key);
     for (int i = 0; i < 26; ++i) set(97 + i, static_cast<ImGuiKey>(ImGuiKey_A + i));
     for (int i = 0; i < 12; ++i) set(282 + i, static_cast<ImGuiKey>(ImGuiKey_F1 + i));
-    for (int b = 0; b < 3; ++b)
+    for (int b = 0; b < 5; ++b)
     {
         in.mouse[b] = active && ImGui::IsMouseDown(b);
         in.mouseDown[b] = active && ImGui::IsMouseClicked(b);
@@ -1108,18 +1110,58 @@ void Editor::GatherScriptInput()
     in.mouseDY = active ? io.MouseDelta.y : 0.0f;
     in.wheel = active ? io.MouseWheel : 0.0f;
 
-    // --playtest: keys held for the whole session.
+    // --playtest: keys held for the whole session plus timed taps, with down/up edges like real input.
     if (m_Playtest.enabled && m_Playing)
+    {
+        std::vector<bool> now(ScriptInput::kKeyCount, false);
         for (int code : m_Playtest.keys)
-            if (code >= 0 && code < ScriptInput::kKeyCount)
+            if (code >= 0 && code < ScriptInput::kKeyCount) now[code] = true;
+        for (auto [code, at] : m_Playtest.presses)
+            if (code >= 0 && code < ScriptInput::kKeyCount && m_PlayTime >= at && m_PlayTime < at + 0.1f) now[code] = true;
+        m_Playtest.down.resize(ScriptInput::kKeyCount, false);
+        for (int code = 0; code < ScriptInput::kKeyCount; ++code)
+        {
+            const bool was = m_Playtest.down[code];
+            if (!now[code] && !was) continue;
+            in.key[code] = in.key[code] || now[code];
+            in.keyDown[code] = in.keyDown[code] || (now[code] && !was);
+            in.keyUp[code] = in.keyUp[code] || (!now[code] && was);
+            if (code >= 323 && code < 328)
             {
-                in.keyDown[code] = !in.key[code];
-                in.key[code] = true;
+                in.mouse[code - 323] = in.key[code];
+                in.mouseDown[code - 323] = in.keyDown[code];
+                in.mouseUp[code - 323] = in.keyUp[code];
             }
+            m_Playtest.down[code] = now[code];
+        }
+        in.mouseDX += m_PlaytestMouse.x * ImGui::GetIO().DeltaTime;
+        in.mouseDY += m_PlaytestMouse.y * ImGui::GetIO().DeltaTime;
+    }
 }
 
-void Editor::EnablePlaytest(float seconds, const std::vector<int>& heldKeys, const std::string& captureDir)
+// Cursor.lockState: while playing with the Game view focused the OS cursor is captured (mouse deltas keep coming).
+// Escape releases it until the Game view is clicked again, like Unity's editor.
+void Editor::UpdateCursor()
 {
+    const bool wantLock = m_Playing && m_Scripts->cursorLock != 0 && m_GameViewFocused && !m_CursorReleased;
+    if (m_Playing && m_CursorLockedByScript && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) m_CursorReleased = true;
+    if (m_CursorReleased && m_GameViewFocused && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) m_CursorReleased = false;
+    if (!m_Playing) m_CursorReleased = false;
+    const bool hidden = m_Playing && m_GameViewFocused && !m_Scripts->cursorVisible && !m_CursorReleased;
+    const int mode = wantLock ? GLFW_CURSOR_DISABLED : hidden ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL;
+    if (mode != m_CursorMode && m_Window)
+    {
+        glfwSetInputMode(m_Window, GLFW_CURSOR, mode);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(m_Window, GLFW_RAW_MOUSE_MOTION, mode == GLFW_CURSOR_DISABLED ? GLFW_TRUE : GLFW_FALSE);
+        m_CursorMode = mode;
+    }
+    m_CursorLockedByScript = wantLock;
+}
+
+void Editor::EnablePlaytest(float seconds, const std::vector<int>& heldKeys, const std::vector<std::pair<int, float>>& pressedKeys,
+                            const std::string& captureDir)
+{
+    m_Playtest.presses = pressedKeys;
     m_Playtest.enabled = true;
     m_Playtest.seconds = seconds;
     m_Playtest.keys = heldKeys;
@@ -1150,6 +1192,18 @@ void Editor::RunPlaytest()
             return;
         }
         if (!p.captureDir.empty() && p.readyFrames == 30) { m_Vk->RequestScreenshot(p.captureDir + "/editor_animator.bmp"); return; }
+        // Scene view framed on the character from the front-left, for checking poses from outside.
+        if (!p.captureDir.empty() && p.readyFrames < 60)
+        {
+            ImGui::SetWindowFocus("Scene");
+            if (const Entity* sel = m_Scene.Find(ActiveEntity()))
+            {
+                const glm::vec3 target = glm::vec3(m_Scene.WorldMatrix(sel->id)[3]) + glm::vec3(0.0f, 1.3f, 0.0f);
+                m_Camera.SetState(target, glm::angleAxis(glm::radians(-150.0f), glm::vec3(0, 1, 0)) *
+                                              glm::angleAxis(glm::radians(-10.0f), glm::vec3(1, 0, 0)), 2.2f, false);
+            }
+            return;
+        }
         if (!p.captureDir.empty()) m_Renderer->CaptureView(SceneRenderer::SceneViewId, p.captureDir + "/edit_scene.bmp");
         EnterPlayMode();
         p.started = true;
@@ -1172,7 +1226,12 @@ void Editor::RunPlaytest()
             if (AnimatorInstance* inst = m_Animation.Instance(e.id))
             {
                 const int s = inst->NextState() >= 0 ? inst->NextState() : inst->CurrentState();
-                if (s >= 0) state = inst->Controller()->states[s].name;
+                if (s >= 0) state = inst->Controller()->Base().states[s].name;
+                for (int l = 1; l < static_cast<int>(inst->Controller()->layers.size()); ++l)
+                {
+                    const int ls = inst->NextState(l) >= 0 ? inst->NextState(l) : inst->CurrentState(l);
+                    if (ls >= 0) state += " | " + inst->Controller()->layers[l].name + ": " + inst->Controller()->layers[l].states[ls].name;
+                }
             }
             LOG_INFO("[playtest] t=%.2f %s pos (%.3f %.3f %.3f) yaw %.1f state %s fps %.0f", m_PlayTime, e.name.c_str(), pos.x, pos.y, pos.z,
                      e.transform.euler.y, state.c_str(), m_Fps);

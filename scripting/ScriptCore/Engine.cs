@@ -119,6 +119,8 @@ namespace TheEngine
                 return Native.Api.HasComponent(m_Id, (int)EngineComponent.Camera) != 0 ? new Camera { m_EntityId = m_Id } as T : null;
             if (typeof(T) == typeof(Rigidbody))
                 return Native.Api.HasComponent(m_Id, (int)EngineComponent.Rigidbody) != 0 ? new Rigidbody { m_EntityId = m_Id } as T : null;
+            if (typeof(T) == typeof(CharacterController))
+                return Native.Api.HasComponent(m_Id, (int)EngineComponent.CharacterController) != 0 ? new CharacterController { m_EntityId = m_Id } as T : null;
             if (typeof(T) == typeof(Animator))
                 return Native.Api.HasComponent(m_Id, (int)EngineComponent.Animator) != 0 ? new Animator { m_EntityId = m_Id } as T : null;
             if (typeof(T) == typeof(Collider))

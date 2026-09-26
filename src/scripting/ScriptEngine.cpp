@@ -54,6 +54,13 @@ struct ScriptNativeApi
     uint64_t (*PrefabInstantiate)(const wchar_t*, const float*, int);
     float (*AnimatorParam)(uint64_t, const wchar_t*, int, float);
     int (*AnimatorStateName)(uint64_t, wchar_t*, int);
+    int (*CharacterMove)(uint64_t, const float*, float);
+    void (*CharacterGet)(uint64_t, int, float*);
+    void (*CharacterSet)(uint64_t, int, const float*);
+    int (*CursorState)(int, int);
+    float (*AnimatorLayer)(uint64_t, const wchar_t*, int, int, float);
+    void (*AnimatorLook)(uint64_t, float, float);
+    void (*AnimatorDelta)(uint64_t, float*);
 };
 
 // Managed entry points (TheEngine.Internal.ScriptHost, [UnmanagedCallersOnly]).
@@ -73,6 +80,7 @@ struct ScriptEngine::Api
     void (*FixedTick)(float) = nullptr;
     void (*OnCollision)(uint64_t, uint64_t, int, const float*) = nullptr;
     void (*LateTick)() = nullptr;
+    int (*DispatchAnimatorMove)(uint64_t) = nullptr;
 };
 
 namespace
@@ -218,6 +226,7 @@ namespace
         case 3: return e->rigidbody.enabled ? 1 : 0;
         case 4: return e->collider.enabled ? 1 : 0;
         case 5: return e->animator.enabled ? 1 : 0;
+        case 6: return e->characterController.enabled ? 1 : 0;
         default: return 0;
         }
     }
@@ -272,7 +281,7 @@ namespace
     }
     int NInputGetMouseButton(int button, int mode)
     {
-        if (!g_Engine || button < 0 || button > 2) return 0;
+        if (!g_Engine || button < 0 || button > 4) return 0;
         const ScriptInput& in = g_Engine->Input();
         return (mode == 0 ? in.mouse[button] : mode == 1 ? in.mouseDown[button] : in.mouseUp[button]) ? 1 : 0;
     }
@@ -427,10 +436,100 @@ namespace
         if (!instance || capacity <= 0) return 0;
         const int state = instance->NextState() >= 0 ? instance->NextState() : instance->CurrentState();
         if (state < 0) return 0;
-        const std::wstring w = Platform::Widen(instance->Controller()->states[state].name);
+        const std::wstring w = Platform::Widen(instance->Controller()->Base().states[state].name);
         const int n = std::min(static_cast<int>(w.size()), capacity);
         std::memcpy(buffer, w.data(), n * sizeof(wchar_t));
         return n;
+    }
+
+    int NCharacterMove(uint64_t id, const float* motion, float dt)
+    {
+        PhysicsWorld* physics = P();
+        if (!physics || !physics->Running() || !E(id)) return 0;
+        return physics->CharacterMove(static_cast<EntityId>(id), glm::make_vec3(motion), dt);
+    }
+
+    // 0 grounded, 1 velocity, 2 height, 3 radius, 4 center, 5 slope limit, 6 step offset, 7 enabled
+    void NCharacterGet(uint64_t id, int property, float* out)
+    {
+        Entity* e = E(id);
+        std::memset(out, 0, sizeof(float) * 3);
+        if (!e) return;
+        const CharacterControllerComponent& c = e->characterController;
+        PhysicsWorld* physics = P();
+        const bool running = physics && physics->Running();
+        switch (property)
+        {
+        case 0: out[0] = running && physics->CharacterGrounded(e->id) ? 1.0f : 0.0f; break;
+        case 1: { const glm::vec3 v = running ? physics->CharacterVelocity(e->id) : glm::vec3(0.0f); std::memcpy(out, &v, 12); break; }
+        case 2: out[0] = c.height; break;
+        case 3: out[0] = c.radius; break;
+        case 4: std::memcpy(out, &c.center, 12); break;
+        case 5: out[0] = c.slopeLimit; break;
+        case 6: out[0] = c.stepOffset; break;
+        case 7: out[0] = c.enabled ? 1.0f : 0.0f; break;
+        }
+    }
+
+    void NCharacterSet(uint64_t id, int property, const float* in)
+    {
+        Entity* e = E(id);
+        if (!e) return;
+        CharacterControllerComponent& c = e->characterController;
+        switch (property)
+        {
+        case 2: c.height = std::max(in[0], 0.01f); break;
+        case 3: c.radius = std::max(in[0], 0.01f); break;
+        case 4: c.center = glm::make_vec3(in); break;
+        case 5: c.slopeLimit = in[0]; break;
+        case 6: c.stepOffset = std::max(in[0], 0.0f); break;
+        case 7: c.enabled = in[0] != 0.0f; break;
+        }
+    }
+
+    // op: 0 get weight, 1 set weight, 2 index of the named layer (-1 if missing)
+    float NAnimatorLayer(uint64_t id, const wchar_t* name, int layer, int op, float value)
+    {
+        AnimationSystem* anim = g_Engine ? g_Engine->GetAnimation() : nullptr;
+        AnimatorInstance* instance = anim ? anim->Instance(static_cast<EntityId>(id)) : nullptr;
+        if (!instance) return op == 2 ? -1.0f : 0.0f;
+        if (op == 2)
+        {
+            const std::string n = name ? Platform::Narrow(name) : std::string();
+            const auto& layers = instance->Controller()->layers;
+            for (size_t i = 0; i < layers.size(); ++i)
+                if (layers[i].name == n) return static_cast<float>(i);
+            return -1.0f;
+        }
+        if (op == 1) instance->SetLayerWeight(layer, value);
+        return instance->LayerWeight(layer);
+    }
+
+    void NAnimatorLook(uint64_t id, float pitch, float yaw)
+    {
+        if (AnimationSystem* anim = g_Engine ? g_Engine->GetAnimation() : nullptr) anim->SetLook(static_cast<EntityId>(id), pitch, yaw);
+    }
+
+    void NAnimatorDelta(uint64_t id, float* out)
+    {
+        AnimationSystem* anim = g_Engine ? g_Engine->GetAnimation() : nullptr;
+        const glm::vec3 p = anim ? anim->DeltaPosition(static_cast<EntityId>(id)) : glm::vec3(0.0f);
+        const glm::quat q = anim ? anim->DeltaRotation(static_cast<EntityId>(id)) : glm::quat(1, 0, 0, 0);
+        out[0] = p.x; out[1] = p.y; out[2] = p.z;
+        out[3] = q.x; out[4] = q.y; out[5] = q.z; out[6] = q.w;
+    }
+
+    // which: 0 lock state, 1 visible. value < 0 reads.
+    int NCursorState(int which, int value)
+    {
+        if (!g_Engine) return 0;
+        if (which == 0)
+        {
+            if (value >= 0) g_Engine->cursorLock = value;
+            return g_Engine->cursorLock;
+        }
+        if (value >= 0) g_Engine->cursorVisible = value != 0;
+        return g_Engine->cursorVisible ? 1 : 0;
     }
 
     void NPhysicsGravity(int set, float* value)
@@ -545,6 +644,7 @@ bool ScriptEngine::HostRuntime()
     get(L"FixedTick", m_Api->FixedTick);
     get(L"OnCollision", m_Api->OnCollision);
     get(L"LateTick", m_Api->LateTick);
+    get(L"DispatchAnimatorMove", m_Api->DispatchAnimatorMove);
     if (!ok) return false;
 
     g_NativeApi = {
@@ -552,7 +652,8 @@ bool ScriptEngine::HostRuntime()
         NEntityCreate, NEntityDestroy, NEntityGetParent, NEntitySetParent, NTransformGet, NTransformSet,
         NHasComponent, NComponentGet, NComponentSet, NInputGetKey, NInputGetMouseButton, NInputGetMouse,
         NComponentAdd, NRigidbodyGet, NRigidbodySet, NRigidbodyAddForce, NPhysicsRaycast, NPhysicsGravity,
-        NEntityInstantiate, NPrefabInstantiate, NAnimatorParam, NAnimatorStateName,
+        NEntityInstantiate, NPrefabInstantiate, NAnimatorParam, NAnimatorStateName, NCharacterMove, NCharacterGet, NCharacterSet,
+        NCursorState, NAnimatorLayer, NAnimatorLook, NAnimatorDelta,
     };
     return m_Api->Initialize(&g_NativeApi) == 1;
 #else
@@ -756,6 +857,8 @@ const ScriptClassInfo* ScriptEngine::FindClass(const std::string& name) const
 // ---------------------------------------------------------------------------
 void ScriptEngine::BeginPlay(Scene* scene)
 {
+    cursorLock = 0;
+    cursorVisible = true;
     m_Scene = scene;
     m_Handles.clear();
     m_DestroyQueue.clear();
@@ -800,6 +903,13 @@ void ScriptEngine::Tick(float dt, float time, int frame)
     if (!m_Playing) return;
     m_Api->Tick(dt, time, frame);
     FlushDestroyQueue();
+}
+
+bool ScriptEngine::DispatchAnimatorMove(EntityId entity)
+{
+    if (!m_Playing) return false;
+    const bool handled = m_Api->DispatchAnimatorMove(entity) != 0;
+    return handled;
 }
 
 void ScriptEngine::LateTick()

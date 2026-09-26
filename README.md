@@ -12,11 +12,13 @@ A small Unity-style game engine/editor written in C++20:
 - **Post-processing:** Unity-style Volumes (global or local with blend distance and priority): bloom, color adjustments, white balance, vignette, and ACES/Neutral tonemapping
 - **Materials:** `.mat` assets with albedo/normal/mask textures, tiling and emission; textures are mipmapped and hot-reloaded when changed on disk
 - **Models:** glTF 2.0 (`.gltf` / `.glb`) via cgltf and FBX via ufbx: meshes, materials, skinned meshes with their skeleton, and animation clips
-- **Animation:** Animator component + node-based Animator Controller (states, transitions with conditions/exit time, parameters, 1D/2D blend trees, Any State), GPU skinning, root motion, name-based retargeting between rigs that share bone names
+- **Animation:** Animator component + layered node-based Animator Controllers (states, transitions with conditions/exit time, parameters, 1D/2D blend trees, Any State, avatar masks, override/additive layers), GPU skinning, root motion, look modifiers, bone sockets, and name-based retargeting between rigs that share bone names
 - **Scripting:** C# like Unity (`MonoBehaviour`, `Start`/`Update`/`FixedUpdate`, `transform`, `Input`, `Time`, `Debug.Log`, `Instantiate`, serialized fields in the Inspector), hosted on .NET through hostfxr
-- **Physics:** Jolt Physics with Unity-style Rigidbody and Box/Sphere/Capsule/Mesh Collider components, triggers, raycasts and collision messages
+- **Physics:** Jolt Physics with Unity-style Rigidbody, CharacterController and Box/Sphere/Capsule/Mesh Collider components, triggers, raycasts and collision messages
 - **Prefabs:** reusable object hierarchies with per-property overrides, Apply/Revert, and a prefab editing mode
 - **Projects:** a Unity Hub-style launcher; each project has `Assets/`, `Library/` and `ProjectSettings/`
+
+The [system guides](docs/README.md) document animation, physics, lighting, rendering, scenes and prefabs, scripting and input, project assets, and editor validation in separate Markdown files.
 
 ## Build
 
@@ -107,9 +109,9 @@ animator.SetFloat("MoveY", Input.GetAxis("Vertical") * 2f, 0.1f, Time.deltaTime)
 animator.SetTrigger("Jump");
 ```
 
-Clips are matched to the model's skeleton by bone name. They take rotations from the clip, and translations only for the root and hips, so rigs that share bone names (e.g. the Unreal mannequin family) can share animations.
+Clips are matched to the model's skeleton by bone name. Rotations transfer by name; root/hip translation and authored IK or marker tracks also transfer. This supports related rigs that share bone names, but it is not a general humanoid retargeter.
 
-`TheEngine --project <folder> --playtest <seconds> [--hold W,LeftShift] [--capture-dir <folder>]` plays a project with keys held down. It logs animated objects and saves Game view and editor screenshots, which is useful for checking movement without touching the mouse or keyboard.
+`TheEngine --project <folder> --playtest <seconds> [--hold W,LeftShift] [--press Space@1.5,Mouse0@3] [--mouse 60,-20] [--capture-dir <folder>]` plays a project with keys held down, keys tapped at given times (so scripts see `GetKeyDown`/`GetKeyUp`), and optional mouse motion in pixels per second. It logs animated objects and saves Game view and editor screenshots, which is useful for checking movement and first-person look without touching the mouse or keyboard.
 
 ## Assets
 

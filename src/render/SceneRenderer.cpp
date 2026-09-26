@@ -932,7 +932,7 @@ void SceneRenderer::RenderSsao(VkCommandBuffer cmd, Target& t, const Scene& scen
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SceneLayout, 0, 1, &uboSet, 0, nullptr);
         for (const Entity& e : scene.entities)
         {
-            if (!e.meshRenderer.enabled || !scene.IsActiveInHierarchy(e.id)) continue;
+            if (!e.meshRenderer.enabled || e.meshRenderer.shadowsOnly || !scene.IsActiveInHierarchy(e.id)) continue;
             DrawEntity(cmd, scene, e, DrawMode::DepthOnly);
         }
         vkCmdEndRendering(cmd);
@@ -1150,7 +1150,7 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
             UsePipelines(cmd, m_MeshPipeline, m_MeshSkinnedPipeline);
             for (const Entity& e : scene.entities)
             {
-                if (!e.meshRenderer.enabled || !scene.IsActiveInHierarchy(e.id)) continue;
+                if (!e.meshRenderer.enabled || e.meshRenderer.shadowsOnly || !scene.IsActiveInHierarchy(e.id)) continue;
                 DrawEntity(cmd, scene, e, DrawMode::Lit);
             }
         }
@@ -1161,7 +1161,7 @@ void SceneRenderer::Render(VkCommandBuffer cmd, ViewId viewId, const Scene& scen
                                                                                : glm::vec4(0.02f, 0.02f, 0.02f, 1.0f);
             for (const Entity& e : scene.entities)
             {
-                if (!e.meshRenderer.enabled || !scene.IsActiveInHierarchy(e.id)) continue;
+                if (!e.meshRenderer.enabled || e.meshRenderer.shadowsOnly || !scene.IsActiveInHierarchy(e.id)) continue;
                 DrawEntity(cmd, scene, e, DrawMode::Unlit, wireColor);
             }
         }

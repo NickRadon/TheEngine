@@ -2,3 +2,7 @@ build*/
 TheEngineLayout.ini
 imgui.ini
 /Assets/
+scripting/ScriptCore/bin/
+scripting/ScriptCore/obj/
+tests/**/bin/
+tests/**/obj/

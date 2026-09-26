@@ -35,6 +35,13 @@ namespace TheEngine.Internal
         public delegate* unmanaged<char*, float*, int, ulong> PrefabInstantiate;
         public delegate* unmanaged<ulong, char*, int, float, float> AnimatorParam;
         public delegate* unmanaged<ulong, char*, int, int> AnimatorStateName;
+        public delegate* unmanaged<ulong, float*, float, int> CharacterMove;
+        public delegate* unmanaged<ulong, int, float*, void> CharacterGet;
+        public delegate* unmanaged<ulong, int, float*, void> CharacterSet;
+        public delegate* unmanaged<int, int, int> CursorState;
+        public delegate* unmanaged<ulong, char*, int, int, float, float> AnimatorLayer;
+        public delegate* unmanaged<ulong, float, float, void> AnimatorLook;
+        public delegate* unmanaged<ulong, float*, void> AnimatorDelta;
     }
 
     internal static unsafe class Native
@@ -71,7 +78,7 @@ namespace TheEngine.Internal
         AnimatorEnabled = 10,    // float[1]
     }
 
-    internal enum EngineComponent { MeshRenderer = 0, Light = 1, Camera = 2, Rigidbody = 3, Collider = 4, Animator = 5 }
+    internal enum EngineComponent { MeshRenderer = 0, Light = 1, Camera = 2, Rigidbody = 3, Collider = 4, Animator = 5, CharacterController = 6 }
 
     internal enum RigidbodyProperty { Velocity = 0, AngularVelocity = 1, Mass = 2, UseGravity = 3, IsKinematic = 4, Drag = 5, AngularDrag = 6 }
 }

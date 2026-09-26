@@ -6,6 +6,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+namespace fs = std::filesystem;
 
 BoneTransform Blend(const BoneTransform& a, const BoneTransform& b, float t)
 {
@@ -67,10 +71,14 @@ ClipBinding BindClip(const AnimationClip& clip, const Skeleton& skeleton)
 {
     ClipBinding b;
     b.trackForBone.resize(skeleton.names.size(), -1);
+    b.animatedTranslation.assign(skeleton.names.size(), 0);
     for (size_t i = 0; i < skeleton.names.size(); ++i)
     {
         auto it = clip.trackIndex.find(skeleton.names[i]);
         if (it != clip.trackIndex.end()) b.trackForBone[i] = it->second;
+        // Unreal-style IK and marker bones are targets in space, not bones with lengths: keep their translation.
+        const std::string& n = skeleton.names[i];
+        if (n.rfind("ik_", 0) == 0 || n == "camera_bone" || n == "interaction" || n == "center_of_mass") b.animatedTranslation[i] = 1;
     }
     // Rigs with different proportions: scale the hip translation by the hip height ratio.
     if (skeleton.pelvis >= 0 && b.trackForBone[skeleton.pelvis] >= 0)
@@ -106,7 +114,7 @@ void SampleClip(const AnimationClip& clip, const ClipBinding& binding, const Ske
         x.s = skeleton.rest[i].s;
         const bool isRoot = static_cast<int>(i) == skeleton.root;
         const bool isPelvis = static_cast<int>(i) == skeleton.pelvis;
-        x.t = isRoot ? sampled.t : isPelvis ? sampled.t * binding.pelvisScale : skeleton.rest[i].t;
+        x.t = isRoot || binding.animatedTranslation[i] ? sampled.t : isPelvis ? sampled.t * binding.pelvisScale : skeleton.rest[i].t;
     }
 
     if (extractRootMotion && skeleton.root >= 0 && binding.trackForBone[skeleton.root] >= 0 && clip.hasRootMotion)
@@ -153,6 +161,91 @@ RootMotion ClipRootMotion(const AnimationClip& clip, float a, float b, bool loop
     return total;
 }
 
+bool AnimationClip::SampleFloat(const std::string& name, float seconds, float& value) const
+{
+    auto it = floatCurves.find(name);
+    if (it == floatCurves.end() || it->second.empty()) return false;
+    const auto& keys = it->second;
+    if (seconds <= keys.front().x) value = keys.front().y;
+    else if (seconds >= keys.back().x) value = keys.back().y;
+    else
+    {
+        size_t i = 0;
+        while (i + 1 < keys.size() && keys[i + 1].x < seconds) ++i;
+        const float span = keys[i + 1].x - keys[i].x;
+        value = span > 1e-6f ? glm::mix(keys[i].y, keys[i + 1].y, (seconds - keys[i].x) / span) : keys[i + 1].y;
+    }
+    return true;
+}
+
+namespace
+{
+    // The Unity project names some FP clips differently from their FBX (A_FP_AK_Tac_Reload.fbx -> A_FP_AK_Reload_Tac.anim).
+    std::string UnityAnimFor(const std::string& fbxPath)
+    {
+        static const std::pair<const char*, const char*> renames[] = {
+            { "Tac_Reload", "Reload_Tac" }, { "Empty_Reload", "Reload_Empty" }, { "Idle_To_Sprint", "IdleToSprint" },
+            { "Sprint_To_Idle", "SprintToIdle" }, { "Regrip", "Idle_Regrip" }, { "UnEquip", "UnEquip" } };
+        fs::path p(fbxPath);
+        std::string stem = p.stem().string();
+        for (const auto& [from, to] : renames)
+        {
+            const size_t at = stem.rfind(from);
+            if (at != std::string::npos && at + std::strlen(from) == stem.size() && stem != "A_FP_AK_Idle_Regrip")
+            {
+                stem = stem.substr(0, at) + to;
+                break;
+            }
+        }
+        p.replace_filename(stem + ".anim");
+        return p.string();
+    }
+
+    // Reads the m_FloatCurves section of a Unity YAML animation clip.
+    void LoadUnityFloatCurves(const std::string& fbxPath, AnimationClip& clip)
+    {
+        std::ifstream in(UnityAnimFor(fbxPath));
+        if (!in) return;
+        std::string line;
+        bool inSection = false;
+        std::vector<glm::vec2> keys;
+        float time = 0.0f;
+        bool haveTime = false;
+        while (std::getline(in, line))
+        {
+            if (!inSection)
+            {
+                if (line.find("m_FloatCurves:") != std::string::npos) inSection = true;
+                continue;
+            }
+            if (line.find("m_PPtrCurves:") != std::string::npos || line.find("m_SampleRate:") != std::string::npos) break;
+            const size_t t = line.find("time: ");
+            if (t != std::string::npos && line.find("inSlope") == std::string::npos)
+            {
+                time = static_cast<float>(std::atof(line.c_str() + t + 6));
+                haveTime = true;
+                continue;
+            }
+            const size_t v = line.find("value: ");
+            if (v != std::string::npos && haveTime && line.find('{') == std::string::npos)
+            {
+                keys.push_back({ time, static_cast<float>(std::atof(line.c_str() + v + 7)) });
+                haveTime = false;
+                continue;
+            }
+            const size_t a = line.find("attribute: ");
+            if (a != std::string::npos)
+            {
+                std::string name = line.substr(a + 11);
+                while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+                if (!keys.empty()) clip.floatCurves[name] = keys;
+                keys.clear();
+                haveTime = false;
+            }
+        }
+    }
+}
+
 const AnimationClip* ClipLibrary::Get(const std::string& ref)
 {
     if (ref.empty()) return nullptr;
@@ -163,6 +256,12 @@ const AnimationClip* ClipLibrary::Get(const std::string& ref)
     const std::string take = hash == std::string::npos ? std::string() : ref.substr(hash + 1);
     auto clip = std::make_unique<AnimationClip>();
     if (!LoadFbxClip(path, take, *clip)) clip.reset();
+    if (clip)
+    {
+        LoadUnityFloatCurves(path, *clip);
+        if (!clip->floatCurves.empty()) LOG_INFO("  %s: %zu float curves from the Unity .anim", ref.c_str(), clip->floatCurves.size());
+    }
+    if (!clip) {}
     else if (clip->hasRootMotion) LOG_INFO("Loaded animation %s (%.2f s, root motion %.2f m/s)", ref.c_str(), clip->duration, clip->averageSpeed);
     else LOG_INFO("Loaded animation %s (%.2f s)", ref.c_str(), clip->duration);
     return (m_Clips[ref] = std::move(clip)).get();
@@ -174,6 +273,11 @@ const ClipBinding& ClipLibrary::Binding(const AnimationClip* clip, const Skeleto
     auto it = perClip.find(skeleton);
     if (it != perClip.end()) return it->second;
     return perClip[skeleton] = BindClip(*clip, *skeleton);
+}
+
+void ClipLibrary::ForgetSkeleton(const Skeleton* skeleton)
+{
+    for (auto& [clip, bindings] : m_Bindings) bindings.erase(skeleton);
 }
 
 void ClipLibrary::Invalidate(const std::string& path)

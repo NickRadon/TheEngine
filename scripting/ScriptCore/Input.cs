@@ -12,7 +12,7 @@ namespace TheEngine
         UpArrow = 273, DownArrow = 274, RightArrow = 275, LeftArrow = 276,
         F1 = 282, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
         RightShift = 303, LeftShift = 304, RightControl = 305, LeftControl = 306, RightAlt = 307, LeftAlt = 308,
-        Mouse0 = 323, Mouse1 = 324, Mouse2 = 325,
+        Mouse0 = 323, Mouse1 = 324, Mouse2 = 325, Mouse3 = 326, Mouse4 = 327,
     }
 
     /// <summary>Keyboard and mouse input (only delivered while the Game view has focus).</summary>

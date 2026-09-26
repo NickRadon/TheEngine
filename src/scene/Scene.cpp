@@ -420,7 +420,7 @@ std::vector<EntityProperty> SerializeEntity(const Entity& e, bool includeObject)
         const auto& m = e.meshRenderer;
         std::ostringstream o;
         o << "mesh " << m.enabled << ' ' << std::quoted(m.mesh) << ' ' << m.color << ' ' << m.metallic << ' '
-          << m.smoothness << ' ' << std::quoted(m.material) << ' ' << m.castShadows;
+          << m.smoothness << ' ' << std::quoted(m.material) << ' ' << m.castShadows << ' ' << m.shadowsOnly;
         add("mesh", o);
     }
     {
@@ -451,10 +451,30 @@ std::vector<EntityProperty> SerializeEntity(const Entity& e, bool includeObject)
         add("collider", o);
     }
     {
+        const auto& c = e.characterController;
+        std::ostringstream o;
+        o << "charactercontroller " << c.enabled << ' ' << c.height << ' ' << c.radius << ' ' << c.center << ' ' << c.slopeLimit << ' ' << c.stepOffset;
+        add("charactercontroller", o);
+    }
+    {
         const auto& a = e.animator;
         std::ostringstream o;
-        o << "animator " << a.enabled << ' ' << std::quoted(a.controller) << ' ' << a.applyRootMotion;
+        o << "animator " << a.enabled << ' ' << std::quoted(a.controller) << ' ' << a.applyRootMotion << ' ' << std::quoted(a.lookBones) << ' ' << a.handIk << ' ' << std::quoted(a.rig);
         add("animator", o);
+    }
+    {
+        const auto& b = e.boneSocket;
+        std::ostringstream o;
+        o << "socket " << b.enabled << ' ' << std::quoted(b.bone) << ' ' << b.position << ' ' << b.euler << ' ' << b.followRotation;
+        add("socket", o);
+    }
+    {
+        const auto& d = e.dynamicBones;
+        std::ostringstream o;
+        o << "dynbones " << d.enabled << ' ' << d.chains.size();
+        for (const auto& c : d.chains)
+            o << ' ' << std::quoted(c.root) << ' ' << c.damping << ' ' << c.elasticity << ' ' << c.stiffness << ' ' << c.inertia << ' ' << c.gravity;
+        add("dynbones", o);
     }
     {
         const auto& p = e.reflectionProbe;
@@ -515,6 +535,7 @@ bool ParseEntityLine(Entity& e, const std::string& line)
             in >> std::ws;
             if (in.peek() == '"') in >> std::quoted(m.material);
             Optional(in, m.castShadows);
+            Optional(in, m.shadowsOnly);
             return true;
         }
         // Version 1: primitive enum index.
@@ -553,10 +574,39 @@ bool ParseEntityLine(Entity& e, const std::string& line)
         in >> c.enabled >> shape >> c.center >> c.size >> c.radius >> c.height >> c.isTrigger >> c.friction >> c.bounciness;
         c.shape = static_cast<ColliderShape>(std::clamp(shape, 0, 3));
     }
+    else if (key == "charactercontroller")
+    {
+        auto& c = e.characterController;
+        in >> c.enabled >> c.height >> c.radius >> c.center >> c.slopeLimit >> c.stepOffset;
+    }
     else if (key == "animator")
     {
         auto& a = e.animator;
-        in >> a.enabled >> std::quoted(a.controller) >> a.applyRootMotion;
+        in >> a.enabled >> std::quoted(a.controller) >> a.applyRootMotion >> std::ws;
+        if (in.peek() == '"')
+        {
+            in >> std::quoted(a.lookBones) >> a.handIk >> std::ws;
+            if (in.peek() == '"') in >> std::quoted(a.rig);
+        }
+        return true;
+    }
+    else if (key == "socket")
+    {
+        auto& b = e.boneSocket;
+        in >> b.enabled >> std::quoted(b.bone) >> b.position >> b.euler >> b.followRotation;
+    }
+    else if (key == "dynbones")
+    {
+        auto& d = e.dynamicBones;
+        size_t count = 0;
+        in >> d.enabled >> count;
+        d.chains.clear();
+        for (size_t i = 0; i < count && in; ++i)
+        {
+            DynamicBoneChain c;
+            in >> std::quoted(c.root) >> c.damping >> c.elasticity >> c.stiffness >> c.inertia >> c.gravity;
+            d.chains.push_back(c);
+        }
     }
     else if (key == "probe")
     {

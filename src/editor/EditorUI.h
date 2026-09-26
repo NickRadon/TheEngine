@@ -29,7 +29,8 @@ namespace EditorUI
     bool ToggleButton(const char* label, bool* value, const char* tooltip = nullptr);
 
     // Unity-style labeled vector field (X/Y/Z colored labels). Returns true when edited.
-    bool Vec3Field(const char* label, float* values, float speed, float resetValue, const char* format = "%.3g");
+    bool Vec3Field(const char* label, float* values, float speed, float resetValue, const char* format = "%.3g",
+                   bool directInput = false);
 
     // Two-column property row helpers (label on the left, widget fills the rest).
     void PropertyLabel(const char* label);

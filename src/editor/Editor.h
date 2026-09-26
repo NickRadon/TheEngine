@@ -45,10 +45,18 @@ public:
     int SelfTestFailures() const;
 
     // Automated play session (--playtest): enters play mode with keys held down, logs animated objects and
-    // captures the Game view, then quits. Keys are Unity KeyCode values.
-    void EnablePlaytest(float seconds, const std::vector<int>& heldKeys, const std::string& captureDir);
+    // captures the Game view, then quits. Keys are Unity KeyCode values; presses are (key, start time) taps.
+    void EnablePlaytest(float seconds, const std::vector<int>& heldKeys, const std::vector<std::pair<int, float>>& pressedKeys,
+                        const std::string& captureDir);
+    // Playtest mouse input: pixels per second added to the scripts' mouse delta.
+    void SetPlaytestMouse(float dx, float dy) { m_PlaytestMouse = glm::vec2(dx, dy); }
 
 private:
+    void UpdateCursor();
+    int m_CursorMode = 0x00034001; // GLFW_CURSOR_NORMAL
+    bool m_CursorReleased = false;
+    bool m_CursorLockedByScript = false;
+    glm::vec2 m_PlaytestMouse{ 0.0f };
     struct SelfTest;
     void RunSelfTest();
     void RunPlaytest();
@@ -57,6 +65,8 @@ private:
         bool enabled = false;
         float seconds = 0.0f;
         std::vector<int> keys;
+        std::vector<std::pair<int, float>> presses;
+        std::vector<bool> down; // keys the playtest held last frame
         std::string captureDir;
         int frames = 0;
         int readyFrames = 0;
@@ -74,6 +84,9 @@ private:
     void BuildDefaultLayout(ImGuiID dockspace);
     void DrawHierarchy();
     void DrawHierarchyNode(EntityId id, const std::string& filter);
+    void DrawBoneNode(EntityId owner, const Skeleton& skeleton, int bone);
+    std::string m_SelectedBone; // bone picked in the Hierarchy (rig of the selected object)
+    bool m_RevealBone = false;
     void DrawInspector();
     void DrawLighting();
     void DrawProject();
@@ -325,6 +338,7 @@ private:
     float m_AnimFilesTimer = 0.0f;
     bool m_FocusAnimator = false;
     bool m_AnimFrameRequest = false;
+    int m_AnimLayer = 0;
     bool m_AnimatorDocked = false;
     ImGuiID m_SceneDockId = 0;
     std::vector<std::string> m_PendingDrops;

@@ -45,7 +45,7 @@ struct ScriptInput
 {
     static constexpr int kKeyCount = 330; // Unity KeyCode range used by TheEngine.KeyCode
     bool key[kKeyCount] = {}, keyDown[kKeyCount] = {}, keyUp[kKeyCount] = {};
-    bool mouse[3] = {}, mouseDown[3] = {}, mouseUp[3] = {};
+    bool mouse[5] = {}, mouseDown[5] = {}, mouseUp[5] = {};
     float mouseX = 0, mouseY = 0, mouseDX = 0, mouseDY = 0, wheel = 0;
 };
 
@@ -72,6 +72,7 @@ public:
     void BeginPlay(Scene* scene);
     void Tick(float dt, float time, int frame);
     void LateTick();                                              // LateUpdate (after animation)
+    bool DispatchAnimatorMove(EntityId entity);                   // OnAnimatorMove; true when a script handled it
     void FixedTick(float fixedDt);                                // FixedUpdate on every script
     void DispatchCollisions(const std::vector<CollisionEvent>& events); // OnCollision*/OnTrigger* messages
     void EndPlay();
@@ -90,6 +91,9 @@ public:
     Scene* GetScene() const { return m_Scene; }
     ScriptInput& Input() { return m_Input; }
     void QueueDestroy(EntityId id) { m_DestroyQueue.push_back(id); }
+    // Cursor.lockState / Cursor.visible requested by scripts (applied by the editor while the Game view has focus).
+    int cursorLock = 0;
+    bool cursorVisible = true;
     // Creates script instances (Awake) for entities added while playing (Instantiate).
     void CreateInstances(const std::vector<EntityId>& ids);
 

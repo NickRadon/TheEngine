@@ -190,15 +190,17 @@ void Editor::DrawHierarchyNode(EntityId id, const std::string& filter)
     Entity* e = m_Scene.Find(id);
     if (!e) return;
     const std::vector<EntityId> children = filter.empty() ? m_Scene.Children(id) : std::vector<EntityId>{};
+    const Skeleton* rig = filter.empty() && e->animator.enabled ? m_Animation.SkeletonOf(id) : nullptr;
     m_HierarchyOrder.push_back(id);
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth |
                                ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NavLeftJumpsToParent;
-    if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
+    if (children.empty() && !rig) flags |= ImGuiTreeNodeFlags_Leaf;
     const bool selected = IsSelected(id);
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
 
     // Reveal entities selected elsewhere (scene view picking, creation).
+    if (rig && m_RevealBone && !m_SelectedBone.empty() && IsSelected(id)) ImGui::SetNextItemOpen(true);
     if (m_ScrollToEntity != kNullEntity && m_Scene.IsAncestor(id, m_ScrollToEntity))
         ImGui::SetNextItemOpen(true);
     const float rowX = ImGui::GetCursorScreenPos().x; // includes tree indentation
@@ -385,11 +387,84 @@ void Editor::DrawHierarchyNode(EntityId id, const std::string& filter)
     if (open)
     {
         for (EntityId child : children) DrawHierarchyNode(child, filter);
+        if (rig)
+            for (int b = 0; b < static_cast<int>(rig->names.size()); ++b)
+                if (rig->parents[b] < 0) DrawBoneNode(id, *rig, b);
         ImGui::TreePop();
     }
     ImGui::PopID();
 }
 
+
+// A rig's bones as an expandable tree under its animated object (Unity shows imported bones as child objects).
+// Bones are virtual: selecting one selects the object and remembers the bone, which the context menu can turn
+// into a Dynamic Bone chain.
+void Editor::DrawBoneNode(EntityId owner, const Skeleton& skeleton, int bone)
+{
+    std::vector<int> kids;
+    for (int i = bone + 1; i < static_cast<int>(skeleton.names.size()); ++i)
+        if (skeleton.parents[i] == bone) kids.push_back(i);
+    const std::string& name = skeleton.names[bone];
+    Entity* e = m_Scene.Find(owner);
+    if (!e) return;
+    const bool isChain = std::any_of(e->dynamicBones.chains.begin(), e->dynamicBones.chains.end(),
+                                     [&](const DynamicBoneChain& c) { return c.root == name; });
+    const bool selected = m_SelectedBone == name && IsSelected(owner);
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding;
+    if (kids.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
+    if (selected) flags |= ImGuiTreeNodeFlags_Selected;
+    // Keep the path to the selected bone open.
+    if (!m_SelectedBone.empty() && IsSelected(owner) && m_RevealBone)
+    {
+        int b = skeleton.Find(m_SelectedBone);
+        while (b >= 0 && b != bone) b = skeleton.parents[b];
+        if (b == bone && m_SelectedBone != name) ImGui::SetNextItemOpen(true);
+    }
+    ImGui::PushID(bone);
+    ImGui::PushStyleColor(ImGuiCol_Text, isChain ? ImVec4(0.55f, 0.85f, 0.55f, 1.0f) : ImVec4(0.55f, 0.72f, 0.95f, 1.0f));
+    const std::string label = isChain ? name + "  (Dynamic Bone)" : name;
+    const bool open = ImGui::TreeNodeEx("##bone", flags, "%s", label.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
+    {
+        Select(owner);
+        m_SelectedBone = name;
+        m_RevealBone = false;
+    }
+    if (ImGui::BeginPopupContextItem("BoneContext"))
+    {
+        Entity* o = m_Scene.Find(owner);
+        auto chain = o ? std::find_if(o->dynamicBones.chains.begin(), o->dynamicBones.chains.end(),
+                                      [&](const DynamicBoneChain& c) { return c.root == name; })
+                       : std::vector<DynamicBoneChain>::iterator();
+        if (o && chain == o->dynamicBones.chains.end())
+        {
+            if (ImGui::MenuItem("Add Dynamic Bone Chain", nullptr, false, !kids.empty()))
+            {
+                PushUndo();
+                o->dynamicBones.enabled = true;
+                DynamicBoneChain c;
+                c.root = name;
+                o->dynamicBones.chains.push_back(c);
+                MarkEdited();
+            }
+        }
+        else if (o && ImGui::MenuItem("Remove Dynamic Bone Chain"))
+        {
+            PushUndo();
+            o->dynamicBones.chains.erase(chain);
+            MarkEdited();
+        }
+        if (ImGui::MenuItem("Copy Bone Name")) ImGui::SetClipboardText(name.c_str());
+        ImGui::EndPopup();
+    }
+    if (open)
+    {
+        for (int k : kids) DrawBoneNode(owner, skeleton, k);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
 // ---------------------------------------------------------------------------
 // Inspector
 // ---------------------------------------------------------------------------
@@ -517,7 +592,13 @@ void Editor::DrawInspector()
         if (EditorUI::ComponentHeader("Mesh Renderer", Icon::Sky, nullptr, &remove))
         {
             EditorUI::PropertyLabel("Cast Shadows");
-            if (ImGui::Checkbox("##castShadows", &m.castShadows)) MarkEdited();
+            int shadowMode = !m.castShadows ? 0 : m.shadowsOnly ? 2 : 1;
+            if (ImGui::Combo("##castShadows", &shadowMode, "Off On Shadows Only "))
+            {
+                MarkEdited();
+                m.castShadows = shadowMode != 0;
+                m.shadowsOnly = shadowMode == 2;
+            }
 
             // Material slot: click to pick, or drag a .mat from the Project window.
             EditorUI::PropertyLabel("Material");
@@ -766,6 +847,31 @@ void Editor::DrawInspector()
         }
     }
 
+    // Character Controller
+    if (e->characterController.enabled)
+    {
+        bool remove = false;
+        if (EditorUI::ComponentHeader("Character Controller", Icon::Cube, nullptr, &remove))
+        {
+            CharacterControllerComponent& c = e->characterController;
+            EditorUI::PropertyLabel("Slope Limit");
+            if (ImGui::DragFloat("##slope", &c.slopeLimit, 0.5f, 0.0f, 89.0f, "%.0f")) MarkEdited();
+            EditorUI::PropertyLabel("Step Offset");
+            if (ImGui::DragFloat("##step", &c.stepOffset, 0.01f, 0.0f, 2.0f)) MarkEdited();
+            if (EditorUI::Vec3Field("Center", glm::value_ptr(c.center), 0.01f, 0.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Radius");
+            if (ImGui::DragFloat("##ccRadius", &c.radius, 0.01f, 0.01f, 10.0f)) MarkEdited();
+            EditorUI::PropertyLabel("Height");
+            if (ImGui::DragFloat("##ccHeight", &c.height, 0.01f, 0.01f, 20.0f)) MarkEdited();
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->characterController.enabled = false;
+        }
+    }
+
     // Animator
     if (e->animator.enabled)
     {
@@ -800,13 +906,35 @@ void Editor::DrawInspector()
             if (ImGui::Button("Open", ImVec2(48, 0)) && !e->animator.controller.empty()) OpenAnimatorController(e->animator.controller);
             EditorUI::PropertyLabel("Apply Root Motion");
             if (ImGui::Checkbox("##rootMotion", &e->animator.applyRootMotion)) MarkEdited();
+            EditorUI::PropertyLabel("Look Bones");
+            char look[256];
+            std::snprintf(look, sizeof(look), "%s", e->animator.lookBones.c_str());
+            if (ImGui::InputText("##lookBones", look, sizeof(look), ImGuiInputTextFlags_EnterReturnsTrue)) { MarkEdited(); e->animator.lookBones = look; }
+            EditorUI::PropertyLabel("Hand IK");
+            if (ImGui::Checkbox("##handIk", &e->animator.handIk)) MarkEdited();
+            ImGui::SetItemTooltip("Two-bone hands reach the rig's ik_hand_r and ik_hand_l targets.");
+            EditorUI::PropertyLabel("Rig Setup");
+            char rig[256];
+            std::snprintf(rig, sizeof(rig), "%s", e->animator.rig.c_str());
+            if (ImGui::InputText("##rigSetup", rig, sizeof(rig), ImGuiInputTextFlags_EnterReturnsTrue))
+            {
+                MarkEdited();
+                e->animator.rig = rig;
+            }
+            if (ImGui::BeginDragDropTarget())
+            {
+                std::string asset;
+                if (AcceptAssetDrop(".rig", asset)) { MarkEdited(); e->animator.rig = asset; }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::SetItemTooltip("Extra helper bones from a Unity character prefab (drop a .rig asset).");
             if (m_Playing)
                 if (AnimatorInstance* inst = m_Animation.Instance(e->id))
                 {
                     const AnimatorController* ctrl = inst->Controller();
                     const int cur = inst->CurrentState();
-                    ImGui::TextDisabled("State: %s%s%s", cur >= 0 ? ctrl->states[cur].name.c_str() : "-",
-                                        inst->NextState() >= 0 ? " -> " : "", inst->NextState() >= 0 ? ctrl->states[inst->NextState()].name.c_str() : "");
+                    ImGui::TextDisabled("State: %s%s%s", cur >= 0 ? ctrl->Base().states[cur].name.c_str() : "-",
+                                        inst->NextState() >= 0 ? " -> " : "", inst->NextState() >= 0 ? ctrl->Base().states[inst->NextState()].name.c_str() : "");
                 }
             ImGui::Spacing();
         }
@@ -814,6 +942,84 @@ void Editor::DrawInspector()
         {
             PushUndo();
             e->animator.enabled = false;
+        }
+    }
+
+    // Bone Socket
+    if (e->boneSocket.enabled)
+    {
+        bool remove = false;
+        if (EditorUI::ComponentHeader("Bone Socket", Icon::Move, nullptr, &remove))
+        {
+            BoneSocketComponent& b = e->boneSocket;
+            EditorUI::PropertyLabel("Bone");
+            char bone[96];
+            std::snprintf(bone, sizeof(bone), "%s", b.bone.c_str());
+            if (ImGui::InputText("##bone", bone, sizeof(bone), ImGuiInputTextFlags_EnterReturnsTrue)) { MarkEdited(); b.bone = bone; }
+            if (EditorUI::Vec3Field("Position", glm::value_ptr(b.position), 0.001f, 0.0f, "%.5g", true)) MarkEdited();
+            if (EditorUI::Vec3Field("Rotation", glm::value_ptr(b.euler), 0.2f, 0.0f, "%.5g", true)) MarkEdited();
+            EditorUI::PropertyLabel("Follow Rotation");
+            if (ImGui::Checkbox("##followRotation", &b.followRotation)) MarkEdited();
+            ImGui::TextDisabled("Follows a bone of the parent object's rig (the parent needs an Animator).");
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->boneSocket.enabled = false;
+        }
+    }
+
+    // Dynamic Bones
+    if (e->dynamicBones.enabled)
+    {
+        bool remove = false;
+        if (EditorUI::ComponentHeader("Dynamic Bones", Icon::Move, nullptr, &remove))
+        {
+            DynamicBonesComponent& d = e->dynamicBones;
+            int removeChain = -1;
+            for (size_t i = 0; i < d.chains.size(); ++i)
+            {
+                DynamicBoneChain& c = d.chains[i];
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::SeparatorText(("Chain " + std::to_string(i)).c_str());
+                EditorUI::PropertyLabel("Root Bone");
+                char root[96];
+                std::snprintf(root, sizeof(root), "%s", c.root.c_str());
+                if (ImGui::InputText("##root", root, sizeof(root), ImGuiInputTextFlags_EnterReturnsTrue)) { MarkEdited(); c.root = root; }
+                EditorUI::PropertyLabel("Damping");
+                if (ImGui::SliderFloat("##damping", &c.damping, 0.0f, 1.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Elasticity");
+                if (ImGui::SliderFloat("##elasticity", &c.elasticity, 0.0f, 1.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Stiffness");
+                if (ImGui::SliderFloat("##stiffness", &c.stiffness, 0.0f, 1.0f)) MarkEdited();
+                EditorUI::PropertyLabel("Inertia");
+                if (ImGui::SliderFloat("##inertia", &c.inertia, 0.0f, 1.0f)) MarkEdited();
+                if (EditorUI::Vec3Field("Gravity", glm::value_ptr(c.gravity), 0.01f, 0.0f)) MarkEdited();
+                if (ImGui::SmallButton("Show in Hierarchy")) { Select(e->id); m_SelectedBone = c.root; m_RevealBone = true; }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove Chain")) removeChain = static_cast<int>(i);
+                ImGui::PopID();
+            }
+            if (removeChain >= 0) { PushUndo(); d.chains.erase(d.chains.begin() + removeChain); }
+            ImGui::Spacing();
+            const bool canAdd = !m_SelectedBone.empty();
+            if (!canAdd) ImGui::BeginDisabled();
+            if (ImGui::Button(canAdd ? ("Add Chain from '" + m_SelectedBone + "'").c_str() : "Add Chain (select a bone in the Hierarchy)"))
+            {
+                PushUndo();
+                DynamicBoneChain c;
+                c.root = m_SelectedBone;
+                d.chains.push_back(c);
+            }
+            if (!canAdd) ImGui::EndDisabled();
+            ImGui::TextDisabled("Simulates the root bone's children in play mode. Right-click a bone in the Hierarchy to add a chain.");
+            ImGui::Spacing();
+        }
+        if (remove)
+        {
+            PushUndo();
+            e->dynamicBones.enabled = false;
         }
     }
 
@@ -975,6 +1181,9 @@ void Editor::DrawInspector()
             { "Light", &e->light.enabled },
             { "Camera", &e->camera.enabled },
             { "Animator", &e->animator.enabled },
+            { "Character Controller", &e->characterController.enabled },
+            { "Bone Socket", &e->boneSocket.enabled },
+            { "Dynamic Bones", &e->dynamicBones.enabled },
             { "Reflection Probe", &e->reflectionProbe.enabled },
             { "Volume", &e->volume.enabled },
         };

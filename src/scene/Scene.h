@@ -36,6 +36,7 @@ struct MeshRendererComponent
     float metallic = 0.0f;
     float smoothness = 0.5f;
     bool castShadows = true;
+    bool shadowsOnly = false;    // Unity's Cast Shadows = Shadows Only: invisible to cameras, still casts (first-person heads)
 };
 
 enum class LightType : int { Directional = 0, Point, Spot };
@@ -91,12 +92,57 @@ struct ColliderComponent
     float bounciness = 0.0f;
 };
 
+// Unity: CharacterController. A capsule moved by scripts (Move) that collides with the world, climbs steps and
+// slopes up to slopeLimit, and knows when it is grounded. Not a rigidbody: gravity is up to the script.
+struct CharacterControllerComponent
+{
+    bool enabled = false;
+    float height = 1.8f;
+    float radius = 0.3f;
+    glm::vec3 center{ 0.0f, 0.9f, 0.0f };
+    float slopeLimit = 45.0f; // degrees
+    float stepOffset = 0.3f;  // meters
+};
+
 // Unity: Animator. Plays an Animator Controller on the skinned mesh of this object (or its children).
 struct AnimatorComponent
 {
     bool enabled = false;
     std::string controller;      // .controller asset
     bool applyRootMotion = true; // move the object with the animation's root motion (play mode)
+    // Look modifier: Animator.SetLookAngles spreads pitch/yaw over these bones (spine to head).
+    std::string lookBones = "spine_01,spine_02,spine_03,spine_04,spine_05,neck_01,head";
+    // Two-bone arm IK: the hands reach the rig's ik_hand_r / ik_hand_l target bones.
+    bool handIk = false;
+    // Optional helper-bone setup for transforms beyond the imported FBX.
+    std::string rig;
+};
+
+// Dynamic bone spring physics for chains of bones (hair, cloth, straps) that follow the
+// animation and lag behind it. Each chain simulates its root bone's descendants in play mode.
+struct DynamicBoneChain
+{
+    std::string root;          // first simulated bone; it follows the animation, its descendants swing
+    float damping = 0.1f;      // velocity lost each frame
+    float elasticity = 0.1f;   // pull back toward the animated pose
+    float stiffness = 0.1f;    // how far from the animated pose a bone may stray (1 = rigid)
+    float inertia = 0.0f;      // how much of the object's own movement carries into the chain
+    glm::vec3 gravity{ 0.0f }; // constant acceleration (m/s^2)
+};
+struct DynamicBonesComponent
+{
+    bool enabled = false;
+    std::vector<DynamicBoneChain> chains;
+};
+
+// Keeps this object on a bone of its parent's skinned mesh (camera on the head, weapon in the hand).
+struct BoneSocketComponent
+{
+    bool enabled = false;
+    std::string bone;
+    glm::vec3 position{ 0.0f };   // offset in the bone's space
+    glm::vec3 euler{ 0.0f };      // degrees, rotation offset in the bone's space
+    bool followRotation = true;   // false: only the position follows (scripts keep control of the rotation)
 };
 
 // Unity: Reflection Probe. Captures the scene around it into a cube map used for reflections inside its box.
@@ -182,6 +228,9 @@ struct Entity
     ColliderComponent collider;
     ReflectionProbeComponent reflectionProbe;
     AnimatorComponent animator;
+    CharacterControllerComponent characterController;
+    BoneSocketComponent boneSocket;
+    DynamicBonesComponent dynamicBones;
     VolumeComponent volume;
 
     // Prefab link: every entity of an instance has the local id it has inside the prefab; the instance root also

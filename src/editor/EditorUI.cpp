@@ -395,7 +395,7 @@ namespace EditorUI
         ImGui::SetNextItemWidth(-FLT_MIN);
     }
 
-    bool Vec3Field(const char* label, float* values, float speed, float resetValue, const char* format)
+    bool Vec3Field(const char* label, float* values, float speed, float resetValue, const char* format, bool directInput)
     {
         bool changed = false;
         ImGui::PushID(label);
@@ -427,7 +427,8 @@ namespace EditorUI
             ImGui::SameLine(0, 2.0f);
             ImGui::SetNextItemWidth(fieldW);
             ImGui::PushID(i);
-            changed |= ImGui::DragFloat("##v", &values[i], speed, 0.0f, 0.0f, format);
+            changed |= directInput ? ImGui::InputFloat("##v", &values[i], 0.0f, 0.0f, format)
+                                   : ImGui::DragFloat("##v", &values[i], speed, 0.0f, 0.0f, format);
             ImGui::PopID();
         }
         ImGui::PopID();

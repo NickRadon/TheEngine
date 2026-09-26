@@ -11,4 +11,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>CS1591;CS1668</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- CMake builds with an intermediate folder under build/; ignore output of direct `dotnet build` runs here. -->
+    <Compile Remove="bin/**;obj/**" />
+  </ItemGroup>
 </Project>
