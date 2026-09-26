@@ -7,7 +7,7 @@ bone "vb_ak_hand_r" "vb_ak_weapon" 0 0 0 0 0 0 1
 # Capture the authored AK weapon before the spine/head look pass.
 precopy "vb_ak_weapon" "ik_hand_gun" 1 1 1 1
 # Correct the imported weapon frame in its copied local axes before look, sway and arm IK.
-prerotate "vb_ak_weapon" "vb_ak_weapon" -0.7071068 0 0 0.7071068
+prerotate "vb_ak_weapon" "vb_ak_weapon" 0 0.7071068 0.7071068 0
 # Copy the authored hand targets after the weapon offset so their neutral model-space
 # grip positions stay anchored; the later spine look carries all three helpers together.
 precopy "vb_ak_hand_l" "ik_hand_l" 1 1 1 1
