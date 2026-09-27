@@ -19,6 +19,9 @@ if (-not $sceneText.Contains('entity 1 11 1 "Main Camera"') -or
     $sceneText.Contains('script 1 "ThirdPersonCamera"')) {
     throw 'AK scene camera is not a child of the head-mounted first-person anchor.'
 }
+if (-not $sceneText.Contains('"spine_01,spine_02,spine_03,spine_04,spine_05"')) {
+    throw 'AK look rotation must use the AE Master five-bone spine chain.'
+}
 $controllerText = Get-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Aim.controller') -Raw
 $maskText = Get-Content -LiteralPath (Join-Path $project 'Assets/AK/Masks/UpperBody.mask') -Raw
 if (-not $controllerText.Contains('layer "Base Layer" 1 override') -or
@@ -37,8 +40,8 @@ if (-not $SkipBuild) {
 $engine = Join-Path $repo 'build/Debug/TheEngine.exe'
 Add-Type -AssemblyName System.Drawing
 foreach ($case in @(
-    @{ name = 'locomotion'; keys = 'W'; image = 'split-locomotion.png' },
-    @{ name = 'aim-locomotion'; keys = 'W,I,J'; image = 'split-aim-locomotion.png' }
+    @{ name = 'locomotion'; keys = 'W'; image = 'split-locomotion.png'; external = 'split-locomotion-external.png' },
+    @{ name = 'aim-locomotion'; keys = 'W,I,J'; image = 'split-aim-locomotion.png'; external = 'split-aim-locomotion-external.png' }
 )) {
     $capture = Join-Path $OutputDir $case.name
     New-Item -ItemType Directory -Force -Path $capture | Out-Null
@@ -73,5 +76,10 @@ foreach ($case in @(
     $bitmap = [System.Drawing.Image]::FromFile($source)
     try { $bitmap.Save((Join-Path $ReviewDir $case.image), [System.Drawing.Imaging.ImageFormat]::Png) }
     finally { $bitmap.Dispose() }
+    $externalSource = Join-Path $capture 'scene_play_03.bmp'
+    if (-not (Test-Path -LiteralPath $externalSource)) { throw "$($case.name): the external view capture is missing." }
+    $external = [System.Drawing.Image]::FromFile($externalSource)
+    try { $external.Save((Join-Path $ReviewDir $case.external), [System.Drawing.Imaging.ImageFormat]::Png) }
+    finally { $external.Dispose() }
     Write-Output "$($case.name): both layers active; maximum hand error $(($errors | Measure-Object -Maximum).Maximum) m; screenshot $($case.image)"
 }
