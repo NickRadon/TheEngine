@@ -28,10 +28,12 @@ public class SplitFirstPersonController : MonoBehaviour
     public float movementDamping = 0.12f;
     public float maxPitch = 80f;
     public float maxYaw = 60f;
+    public float viewRigLowerOnLookDown = 0.35f;
 
     Animator bodyAnimator;
     Animator viewAnimator;
     InputActionAsset actions;
+    Vector3 viewRigBasePosition;
     float pitch;
     float yaw;
 
@@ -41,6 +43,7 @@ public class SplitFirstPersonController : MonoBehaviour
     {
         bodyAnimator = GetComponent<Animator>();
         viewAnimator = viewRig?.GetComponent<Animator>();
+        if (viewRig != null) viewRigBasePosition = viewRig.transform.localPosition;
         if (bodyAnimator == null) Debug.LogError("SplitFirstPersonController needs a body Animator.");
         if (viewAnimator == null) Debug.LogError("SplitFirstPersonController needs an assigned view-rig Animator.");
         try { actions = InputActionAsset.Load(inputActions); }
@@ -69,5 +72,11 @@ public class SplitFirstPersonController : MonoBehaviour
         pitch = Mathf.Clamp(pitch + look.y + lookKeys.y * lookKeySpeed * Time.deltaTime, -maxPitch, maxPitch);
         yaw = Mathf.Clamp(yaw + look.x + lookKeys.x * lookKeySpeed * Time.deltaTime, -maxYaw, maxYaw);
         if (cameraObject != null) cameraObject.transform.localRotation = Quaternion.Euler(pitch, yaw, 0f);
+        if (viewRig != null)
+        {
+            float down = Mathf.Clamp(-pitch / (maxPitch > 1f ? maxPitch : 1f), 0f, 1f);
+            viewRig.transform.localPosition = new Vector3(viewRigBasePosition.x,
+                viewRigBasePosition.y - viewRigLowerOnLookDown * down, viewRigBasePosition.z);
+        }
     }
 }

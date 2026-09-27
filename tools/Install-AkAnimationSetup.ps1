@@ -5,7 +5,7 @@ param(
     [double]$CameraOffsetZ = 0,
     [double]$ViewRigOffsetX = -0.045,
     [double]$ViewRigOffsetY = -1.51,
-    [double]$ViewRigOffsetZ = -0.25
+    [double]$ViewRigOffsetZ = 0.1
 )
 
 Set-StrictMode -Version Latest
