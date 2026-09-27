@@ -25,10 +25,7 @@ $scene = $scene.Remove($cameraMatch.Index, $cameraMatch.Length).Insert($cameraMa
 
 # Migrate the old head-parented empty. The camera now copies the head location directly,
 # while its rotation remains controlled by the Player aim script.
-if ($scene -match '(?m)^entity 11 ') {
-    if ($scene -notmatch '(?m)^entity 11 4 1 "Head Camera Anchor"') {
-        throw 'Entity 11 is already used by another object.'
-    }
+if ($scene -match '(?m)^entity 11 4 1 "Head Camera Anchor"') {
     $anchor = [regex]::Match($scene, '(?ms)^entity 11 4 1 "Head Camera Anchor"\r?\n.*?(?=^entity |\z)')
     $scene = $scene.Remove($anchor.Index, $anchor.Length)
 }

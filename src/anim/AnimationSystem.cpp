@@ -621,8 +621,21 @@ void AnimationSystem::Update(Scene& scene, float dt, bool playing)
         std::vector<std::pair<EntityId, const MeshData*>> meshes;
         if (const MeshData* md = SkinnedMesh(e)) meshes.push_back({ e.id, md });
         for (const Entity& c : scene.entities)
-            if (c.id != e.id && scene.IsAncestor(e.id, c.id) && scene.IsActiveInHierarchy(c.id))
+        {
+            if (c.id == e.id || !scene.IsAncestor(e.id, c.id) || !scene.IsActiveInHierarchy(c.id)) continue;
+            // A nested Animator owns its own mesh subtree. Without this boundary the body Animator
+            // also evaluates the view arms, and whichever Animator runs last overwrites their palette.
+            bool ownedByNestedAnimator = false;
+            for (EntityId ancestor = c.id; ancestor != e.id && ancestor != kNullEntity; )
+            {
+                const Entity* node = scene.Find(ancestor);
+                if (!node) break;
+                if (node->animator.enabled) { ownedByNestedAnimator = true; break; }
+                ancestor = node->parent;
+            }
+            if (!ownedByNestedAnimator)
                 if (const MeshData* md = SkinnedMesh(c)) meshes.push_back({ c.id, md });
+        }
         if (meshes.empty()) continue;
         const Skeleton& sourceSkeleton = *meshes[0].second->skeleton;
         Runtime& rt = m_Animators[e.id];

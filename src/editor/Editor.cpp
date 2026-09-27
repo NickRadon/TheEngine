@@ -1262,7 +1262,8 @@ void Editor::RunPlaytest()
             glm::mat4 weaponBone(1.0f);
             if (m_Animation.BoneModelMatrix(e.id, "vb_ak_weapon", weaponBone))
             {
-                const glm::vec3 forward = glm::normalize(-glm::vec3(weaponBone[2]));
+                const glm::mat4 weaponWorld = m_Scene.WorldMatrix(e.id) * weaponBone;
+                const glm::vec3 forward = glm::normalize(-glm::vec3(weaponWorld[2]));
                 LOG_INFO("[playtest] weapon forward (%.3f %.3f %.3f)", forward.x, forward.y, forward.z);
                 for (const char* side : { "l", "r" })
                 {
