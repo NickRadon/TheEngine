@@ -33,7 +33,7 @@ if (-not $locomotionController.StartsWith('TheEngineAnimator 1')) {
 }
 $controller = "TheEngineAnimator 4`nlayer ""Base Layer"" 1 override`n" +
     $locomotionController.Substring($locomotionController.IndexOf("`n") + 1).TrimEnd() + "`n" + @'
-layer "AK Upper" 1 override @mask "Assets/AK/Masks/UpperBody.mask"
+layer "AK Upper" 1 override @meshspace @mask "Assets/AK/Masks/UpperBody.mask"
 state "AK Idle" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 1 1 320 140
 default "AK Idle"
 entry 40 140

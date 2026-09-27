@@ -1441,6 +1441,24 @@ public class AnimApiDefaults : MonoBehaviour
                       pose[1].t.y, spineAngle);
         t.Check(pose.size() == 3 && std::fabs(pose[1].t.y - 2.0f) < 1e-4f && std::fabs(spineAngle - 0.8f) < 1e-4f, msg);
 
+        // A local-only upper-body override would inherit the walking pelvis turn.
+        // Mesh-space rotation must keep spine_01 on the FP clip while pelvis stays on locomotion.
+        AnimationClip walking = maskClip("walking pelvis", 2.0f, 0.0f);
+        walking.tracks[1].frames[1].r = glm::angleAxis(0.45f, glm::vec3(0.0f, 0.0f, 1.0f));
+        clips.Add("masktest:walking", walking);
+        clips.Add("masktest:fp", maskClip("FP upper", 4.0f, 0.8f));
+        loaded.Base().states[0].clip = "masktest:walking";
+        loaded.layers[1].states[0].clip = "masktest:fp";
+        loaded.layers[1].meshSpaceRotation = true;
+        instance.Reset(loaded);
+        instance.Update(1.0f, clips, skeleton, false, pose, motion);
+        std::vector<glm::mat4> splitModel;
+        PoseToModel(skeleton, pose, splitModel);
+        const float pelvisModelAngle = 2.0f * std::acos(std::clamp(std::fabs(glm::quat_cast(glm::mat3(splitModel[1])).w), 0.0f, 1.0f));
+        const float spineModelAngle = 2.0f * std::acos(std::clamp(std::fabs(glm::quat_cast(glm::mat3(splitModel[2])).w), 0.0f, 1.0f));
+        std::snprintf(msg, sizeof(msg), "walking pelvis %.2f rad, FP spine model rotation %.2f rad", pelvisModelAngle, spineModelAngle);
+        t.Check(std::fabs(pelvisModelAngle - 0.45f) < 0.01f && std::fabs(spineModelAngle - 0.8f) < 0.01f, msg);
+
         AnimatorController missing = controller;
         missing.layers[1].maskAsset = "Assets/_missing_test.mask";
         missing.layers[1].RefreshMaskAsset();

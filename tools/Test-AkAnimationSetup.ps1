@@ -22,7 +22,7 @@ if (-not $sceneText.Contains('entity 1 11 1 "Main Camera"') -or
 $controllerText = Get-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Aim.controller') -Raw
 $maskText = Get-Content -LiteralPath (Join-Path $project 'Assets/AK/Masks/UpperBody.mask') -Raw
 if (-not $controllerText.Contains('layer "Base Layer" 1 override') -or
-    -not $controllerText.Contains('layer "AK Upper" 1 override @mask "Assets/AK/Masks/UpperBody.mask"') -or
+    -not $controllerText.Contains('layer "AK Upper" 1 override @meshspace @mask "Assets/AK/Masks/UpperBody.mask"') -or
     -not $maskText.Contains('bone "spine_01"')) {
     throw 'The locomotion base and spine_01 AK override mask are not configured.'
 }
