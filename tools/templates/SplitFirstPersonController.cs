@@ -69,7 +69,8 @@ public class SplitFirstPersonController : MonoBehaviour
         Vector2 lookKeys = actions.ReadVector2(Action(lookKeysAction));
         pitch = Mathf.Clamp(pitch + look.y + lookKeys.y * lookKeySpeed * Time.deltaTime, -maxPitch, maxPitch);
         float turn = actions.ReadFloat(Action(turnAction)) * turnSpeed * Time.deltaTime;
-        float yawDelta = look.x + lookKeys.x * lookKeySpeed * Time.deltaTime + turn;
+        // The engine's horizontal mouse delta is opposite the live game-view motion.
+        float yawDelta = -look.x + lookKeys.x * lookKeySpeed * Time.deltaTime + turn;
         transform.Rotate(0f, -yawDelta, 0f);
         if (cameraObject != null) cameraObject.transform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
         if (viewRig != null)

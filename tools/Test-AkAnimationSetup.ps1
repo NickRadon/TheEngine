@@ -126,8 +126,8 @@ foreach ($case in @(
     if ($case.name -eq 'mouse-look') {
         $forwards = @($lines | Select-String -Pattern 'camera pos .* forward \(([-0-9.]+)' |
             ForEach-Object { [double]::Parse($_.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) })
-        if ($forwards.Count -eq 0 -or $forwards[-1] -lt 0.2) {
-            throw 'Mouse X did not turn the camera right without holding a button.'
+        if ($forwards.Count -eq 0 -or $forwards[-1] -gt -0.2) {
+            throw 'Horizontal mouse input did not use the corrected game-view direction.'
         }
         $upwards = @($lines | Select-String -Pattern 'camera pos .* forward \([-0-9.]+ ([-0-9.]+)' |
             ForEach-Object { [double]::Parse($_.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) })
