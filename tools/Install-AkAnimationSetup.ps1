@@ -68,6 +68,7 @@ public class AKAimController : MonoBehaviour
     public float maxYaw = 60f;
 
     Animator animator;
+    Transform cameraTransform;
     float pitch;
     float yaw;
 
@@ -75,6 +76,8 @@ public class AKAimController : MonoBehaviour
     {
         animator = GetComponent<Animator>();
         if (animator == null) Debug.LogError("AKAimController needs an Animator on the Player.");
+        GameObject cameraObject = GameObject.Find("Main Camera");
+        if (cameraObject != null) cameraTransform = cameraObject.transform;
     }
 
     void Update()
@@ -104,6 +107,7 @@ public class AKAimController : MonoBehaviour
         pitch = Mathf.Clamp(pitch, -maxPitch, maxPitch);
         yaw = Mathf.Clamp(yaw, -maxYaw, maxYaw);
         animator.SetLookAngles(pitch, yaw);
+        if (cameraTransform != null) cameraTransform.localRotation = Quaternion.Euler(pitch, yaw, 0f);
     }
 }
 '@

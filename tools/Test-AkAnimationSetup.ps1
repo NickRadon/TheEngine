@@ -13,11 +13,15 @@ if (-not (Test-Path -LiteralPath (Join-Path $project 'Assets/Scenes/AK_Aiming.sc
     throw 'AnimationSetup AK_Aiming.scene is missing. Run Install-AkAnimationSetup.ps1 first.'
 }
 $sceneText = Get-Content -LiteralPath (Join-Path $project 'Assets/Scenes/AK_Aiming.scene') -Raw
-if (-not $sceneText.Contains('entity 1 11 1 "Main Camera"') -or
-    -not $sceneText.Contains('entity 11 4 1 "Head Camera Anchor"') -or
-    -not $sceneText.Contains('socket 1 "head"') -or
+if (-not $sceneText.Contains('entity 1 4 1 "Main Camera"') -or
+    -not $sceneText.Contains('socket 1 "head" 0 0 0 0 0 0 0') -or
+    $sceneText.Contains('entity 11 4 1 "Head Camera Anchor"') -or
     $sceneText.Contains('script 1 "ThirdPersonCamera"')) {
-    throw 'AK scene camera is not a child of the head-mounted first-person anchor.'
+    throw 'AK camera must be a Player child that copies head position without bone rotation.'
+}
+$aimScript = Get-Content -LiteralPath (Join-Path $project 'Assets/Scripts/AKAimController.cs') -Raw
+if (-not $aimScript.Contains('cameraTransform.localRotation = Quaternion.Euler(pitch, yaw, 0f)')) {
+    throw 'AK camera rotation is not driven by the Player aim input.'
 }
 if (-not $sceneText.Contains('"spine_01,spine_02,spine_03,spine_04,spine_05"')) {
     throw 'AK look rotation must use the AE Master five-bone spine chain.'

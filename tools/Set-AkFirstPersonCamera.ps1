@@ -14,31 +14,23 @@ if ($scene -notmatch '(?m)^entity 4 0 1 "Player"') { throw 'AK scene has no Play
 $offset = @($CameraOffsetX, $CameraOffsetY, $CameraOffsetZ) |
     ForEach-Object { $_.ToString('0.######', [Globalization.CultureInfo]::InvariantCulture) }
 $camera = @"
-entity 1 11 1 "Main Camera"
-  transform $($offset -join ' ') 0.000000 -0.216440 0.000000 0.976296 1 1 1 0 -25 0
+entity 1 4 1 "Main Camera"
+  transform 0 0 0 0.000000 0.000000 0.000000 1.000000 1 1 1 0 0 0
   camera 1 70 0.03 1000 0 5
+  socket 1 "head" $($offset -join ' ') 0 0 0 0
 "@ + "`n"
 $cameraMatch = [regex]::Match($scene, '(?ms)^entity 1 \d+ 1 "Main Camera"\r?\n.*?(?=^entity |\z)')
 if (-not $cameraMatch.Success) { throw 'AK scene has no Main Camera entity 1.' }
 $scene = $scene.Remove($cameraMatch.Index, $cameraMatch.Length).Insert($cameraMatch.Index, $camera)
 
-# The socket follows the animated head; the camera's child transform is the optional view offset.
+# Migrate the old head-parented empty. The camera now copies the head location directly,
+# while its rotation remains controlled by the Player aim script.
 if ($scene -match '(?m)^entity 11 ') {
     if ($scene -notmatch '(?m)^entity 11 4 1 "Head Camera Anchor"') {
         throw 'Entity 11 is already used by another object.'
     }
     $anchor = [regex]::Match($scene, '(?ms)^entity 11 4 1 "Head Camera Anchor"\r?\n.*?(?=^entity |\z)')
-    if ($anchor.Value -notmatch '(?m)^  socket 1 "head"') { throw 'Head Camera Anchor has no head socket.' }
-    $aligned = [regex]::Replace($anchor.Value, '(?m)^  socket 1 "head"[^\r\n]*',
-        '  socket 1 "head" 0 0 0 -90 0 -90 1')
-    $scene = $scene.Remove($anchor.Index, $anchor.Length).Insert($anchor.Index, $aligned)
-}
-else {
-    $scene = $scene.TrimEnd("`r", "`n") + "`n" + @'
-entity 11 4 1 "Head Camera Anchor"
-  transform 0 0 0 0.000000 0.000000 0.000000 1.000000 1 1 1 0 0 0
-  socket 1 "head" 0 0 0 -90 0 -90 1
-'@
+    $scene = $scene.Remove($anchor.Index, $anchor.Length)
 }
 
 # A first-person camera must not see the inside of the character's head.
@@ -46,4 +38,4 @@ $headMesh = '(?m)^(  mesh 1 "Assets/Character/Mesh/Player_Body_Full.fbx#0"[^\r\n
 if ($scene -notmatch $headMesh) { throw 'AK scene head mesh was not found.' }
 $scene = [regex]::Replace($scene, $headMesh, '$1 1')
 Set-Content -LiteralPath $scenePath -Value $scene -NoNewline
-Write-Output "First-person AK camera attached to head in $scenePath"
+Write-Output "First-person AK camera parented to Player and copying head position in $scenePath"
