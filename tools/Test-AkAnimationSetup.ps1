@@ -23,6 +23,14 @@ $aimScript = Get-Content -LiteralPath (Join-Path $project 'Assets/Scripts/AKAimC
 if (-not $aimScript.Contains('cameraTransform.localRotation = Quaternion.Euler(pitch, yaw, 0f)')) {
     throw 'AK camera rotation is not driven by the Player aim input.'
 }
+$inputPath = Join-Path $project 'Assets/Input/AK_Player.inputactions'
+if (-not (Test-Path -LiteralPath $inputPath)) { throw 'AK input-action asset is missing.' }
+$inputAsset = Get-Content -LiteralPath $inputPath -Raw | ConvertFrom-Json
+$playerMap = @($inputAsset.maps | Where-Object { $_.name -eq 'Player' })
+if ($playerMap.Count -ne 1 -or @($playerMap[0].actions | Where-Object { $_.name -eq 'Look' }).Count -ne 1 -or
+    @($playerMap[0].bindings | Where-Object { $_.path -eq '<Mouse>/delta' -and $_.action -eq 'Look' }).Count -ne 1) {
+    throw 'AK input-action asset has no Player/Look mouse-delta binding.'
+}
 if (-not $sceneText.Contains('"spine_01,spine_02,spine_03,spine_04,spine_05"')) {
     throw 'AK look rotation must use the AE Master five-bone spine chain.'
 }
@@ -45,14 +53,20 @@ $engine = Join-Path $repo 'build/Debug/TheEngine.exe'
 Add-Type -AssemblyName System.Drawing
 foreach ($case in @(
     @{ name = 'locomotion'; keys = 'W'; image = 'split-locomotion.png'; external = 'split-locomotion-external.png' },
-    @{ name = 'aim-locomotion'; keys = 'W,I,J'; image = 'split-aim-locomotion.png'; external = 'split-aim-locomotion-external.png' }
+    @{ name = 'aim-locomotion'; keys = 'W,I,J'; image = 'split-aim-locomotion.png'; external = 'split-aim-locomotion-external.png' },
+    @{ name = 'mouse-look'; keys = 'W,Mouse1'; mouse = '60,-30'; image = 'split-mouse-look.png'; external = 'split-mouse-look-external.png' }
 )) {
     $capture = Join-Path $OutputDir $case.name
     New-Item -ItemType Directory -Force -Path $capture | Out-Null
     $previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $log = & $engine --project $project --playtest 2 --capture-dir $capture --hold $case.keys 2>&1
+        if ($case.ContainsKey('mouse')) {
+            $log = & $engine --project $project --playtest 2 --capture-dir $capture --hold $case.keys --mouse $case.mouse 2>&1
+        }
+        else {
+            $log = & $engine --project $project --playtest 2 --capture-dir $capture --hold $case.keys 2>&1
+        }
         $exit = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previous }
@@ -74,6 +88,13 @@ foreach ($case in @(
     }
     if (-not ($lines | Select-String -SimpleMatch '[playtest] camera pos')) {
         throw "$($case.name): no first-person camera transform was reported."
+    }
+    if ($case.name -eq 'mouse-look') {
+        $forwards = @($lines | Select-String -Pattern 'camera pos .* forward \(([-0-9.]+)' |
+            ForEach-Object { [double]::Parse($_.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) })
+        if ($forwards.Count -eq 0 -or [Math]::Abs($forwards[-1]) -lt 0.2) {
+            throw 'Mouse look binding did not turn the camera.'
+        }
     }
     $source = Join-Path $capture 'play_03.bmp'
     if (-not (Test-Path -LiteralPath $source)) { throw "$($case.name): the visual capture is missing." }

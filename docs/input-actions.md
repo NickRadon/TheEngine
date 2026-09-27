@@ -1,0 +1,7 @@
+# Input action assets
+
+TheEngine reads Unity Input System `.inputactions` JSON from a project's `Assets` folder. Create one from **Project > Create > Input Actions**, or start with [`tests/assets/AK_Player.inputactions`](../tests/assets/AK_Player.inputactions). Double-click an asset to edit its JSON in your default editor. A script loads it with `InputActionAsset.Load("Assets/Input/AK_Player.inputactions")` and reads an action by `Map/Action` name.
+
+The AK asset defines a `Player` action map. `Move` uses WASD or arrow-key `2DVector` composites; `Look` uses mouse delta continuously; `LookKeys` uses I/J/K/L; `Turn` is a Q/E `1DAxis` composite. Aim (right mouse button), Walk, Sprint, Fire, Reload, Jump, and Interact are separate button actions. Change a binding's `path` to rebind it. For example, change `<Keyboard>/i` to `<Keyboard>/upArrow`. Change `scaleVector2(x=3,y=3)` on the `<Mouse>/delta` binding to tune horizontal and vertical look sensitivity independently; negative values invert an axis. Restart play mode after editing the asset, since scripts load it in `Start()`.
+
+The current runtime implements keyboard and mouse buttons, mouse delta, 1D/2D keyboard composites, `scaleVector2`, scalar `factor`, and vector inversion. The JSON retains Unity action metadata and control schemes for interchange, but gamepads and Unity interaction timing (`tap`, `hold`, etc.) are not implemented yet. `IsPressed`, `WasPressedThisFrame`, `ReadFloat`, and `ReadVector2` are the supported script reads.

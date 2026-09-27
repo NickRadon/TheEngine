@@ -281,6 +281,13 @@ std::string Editor::CreateAsset(const std::string& folder, const std::string& ki
         path = UniquePath(fs::path(folder) / "New Rig.rig");
         std::ofstream(path) << "TheEngineRig 2\n# Add helper bones first, then ordered controls.\n";
     }
+    else if (kind == "inputactions")
+    {
+        path = UniquePath(fs::path(folder) / "New Input Actions.inputactions");
+        std::ofstream(path) << "{\n  \"version\": 1,\n  \"name\": \"New Input Actions\",\n"
+                           << "  \"maps\": [{ \"name\": \"Player\", \"actions\": [], \"bindings\": [] }],\n"
+                           << "  \"controlSchemes\": []\n}\n";
+    }
     else if (kind == "scene")
     {
         path = UniquePath(fs::path(folder) / "New Scene.scene");
@@ -318,6 +325,7 @@ void Editor::ProjectContextMenu(const std::string& folder)
         if (ImGui::MenuItem("Material")) CreateAsset(folder, "material");
         if (ImGui::MenuItem("Scene")) CreateAsset(folder, "scene");
         if (ImGui::MenuItem("Animator Controller")) CreateAsset(folder, "controller");
+        if (ImGui::MenuItem("Input Actions")) CreateAsset(folder, "inputactions");
         if (ImGui::MenuItem("Blend Mask"))
         {
             const std::string path = CreateAsset(folder, "mask");
@@ -579,7 +587,7 @@ void Editor::DrawProject()
         {
             if (it.dir) openFolder = it.path;
             else if (IsScene(it.path)) OpenScene(it.path);
-            else if (IsScript(it.path) || ResourceCache::IsTextureFile(it.path)) Platform::OpenWithDefaultApp(it.path);
+            else if (IsScript(it.path) || fs::path(it.path).extension() == ".inputactions" || ResourceCache::IsTextureFile(it.path)) Platform::OpenWithDefaultApp(it.path);
             else if (ResourceCache::IsModelFile(it.path)) InstantiateModel(it.path, kNullEntity, nullptr);
             else if (Prefab::IsPrefabFile(it.path)) OpenPrefabMode(it.path);
             else if (AnimatorController::IsControllerFile(it.path)) OpenAnimatorController(it.path);

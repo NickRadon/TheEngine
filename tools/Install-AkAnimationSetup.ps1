@@ -52,66 +52,12 @@ bone "ik_hand_r"
 '@
 Set-Content -LiteralPath (Join-Path $maskDir 'UpperBody.mask') -Value $mask
 
-$aimScript = @'
-using TheEngine;
+$inputDir = Join-Path $project 'Assets/Input'
+New-Item -ItemType Directory -Force -Path $inputDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $repo 'tests/assets/AK_Player.inputactions') `
+    -Destination (Join-Path $inputDir 'AK_Player.inputactions') -Force
 
-// Lower body uses locomotion; the AK first-person clip owns spine_01 and up.
-// WASD moves, Left Ctrl walks, Left Shift runs forward, Q/E turns the body.
-// Hold right mouse and move the mouse, or use I/J/K/L, to aim with the spine.
-public class AKAimController : MonoBehaviour
-{
-    public float turnSpeed = 120f;
-    public float damping = 0.12f;
-    public float mouseSensitivity = 3f;
-    public float keySpeed = 65f;
-    public float maxPitch = 45f;
-    public float maxYaw = 60f;
-
-    Animator animator;
-    Transform cameraTransform;
-    float pitch;
-    float yaw;
-
-    void Start()
-    {
-        animator = GetComponent<Animator>();
-        if (animator == null) Debug.LogError("AKAimController needs an Animator on the Player.");
-        GameObject cameraObject = GameObject.Find("Main Camera");
-        if (cameraObject != null) cameraTransform = cameraObject.transform;
-    }
-
-    void Update()
-    {
-        if (animator == null) return;
-        float x = Input.GetAxis("Horizontal");
-        float y = Input.GetAxis("Vertical");
-        float length = Mathf.Sqrt(x * x + y * y);
-        if (length > 1f) { x /= length; y /= length; length = 1f; }
-        float gait = Input.GetKey(KeyCode.LeftControl) ? 1f : 2f;
-        if (Input.GetKey(KeyCode.LeftShift) && y > 0.5f && Mathf.Abs(x) < 0.5f) gait = 3f;
-        animator.SetFloat("MoveX", x * gait, damping, Time.deltaTime);
-        animator.SetFloat("MoveY", y * gait, damping, Time.deltaTime);
-        animator.SetFloat("Speed", length * gait);
-        float turn = (Input.GetKey(KeyCode.E) ? 1f : 0f) - (Input.GetKey(KeyCode.Q) ? 1f : 0f);
-        transform.Rotate(0f, -turn * turnSpeed * Time.deltaTime, 0f);
-
-        if (Input.GetMouseButton(1))
-        {
-            pitch += Input.GetAxis("Mouse Y") * mouseSensitivity;
-            yaw += Input.GetAxis("Mouse X") * mouseSensitivity;
-        }
-        if (Input.GetKey(KeyCode.I)) pitch += keySpeed * Time.deltaTime;
-        if (Input.GetKey(KeyCode.K)) pitch -= keySpeed * Time.deltaTime;
-        if (Input.GetKey(KeyCode.J)) yaw += keySpeed * Time.deltaTime;
-        if (Input.GetKey(KeyCode.L)) yaw -= keySpeed * Time.deltaTime;
-        pitch = Mathf.Clamp(pitch, -maxPitch, maxPitch);
-        yaw = Mathf.Clamp(yaw, -maxYaw, maxYaw);
-        animator.SetLookAngles(pitch, yaw);
-        if (cameraTransform != null) cameraTransform.localRotation = Quaternion.Euler(pitch, yaw, 0f);
-    }
-}
-'@
-Set-Content -LiteralPath (Join-Path $project 'Assets/Scripts/AKAimController.cs') -Value $aimScript
+Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AKAimController.cs') -Destination (Join-Path $project 'Assets/Scripts/AKAimController.cs') -Force
 
 $scene = Get-Content -LiteralPath $sourceScene -Raw
 $scene = $scene.Replace('name "AnimationSetup"', 'name "AK Aiming"')
