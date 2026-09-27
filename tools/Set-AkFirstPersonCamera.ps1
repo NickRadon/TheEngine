@@ -16,7 +16,7 @@ $offset = @($CameraOffsetX, $CameraOffsetY, $CameraOffsetZ) |
 $camera = @"
 entity 1 4 1 "Main Camera"
   transform 0 0 0 0.000000 0.000000 0.000000 1.000000 1 1 1 0 0 0
-  camera 1 70 0.03 1000 0 5
+  camera 1 90 0.03 1000 0 5
   socket 1 "head" $($offset -join ' ') 0 0 0 0
 "@ + "`n"
 $cameraMatch = [regex]::Match($scene, '(?ms)^entity 1 \d+ 1 "Main Camera"\r?\n.*?(?=^entity |\z)')

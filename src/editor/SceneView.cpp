@@ -445,7 +445,7 @@ void Editor::SceneViewIcons(ImDrawList* dl)
                 RenderView rv = MakeCameraView(e, aspect, 0.0f);
                 glm::mat4 proj = c.orthographic
                     ? glm::orthoRH_ZO(-c.orthoSize * aspect, c.orthoSize * aspect, -c.orthoSize, c.orthoSize, c.nearClip, std::min(c.farClip, 30.0f))
-                    : glm::perspectiveRH_ZO(glm::radians(c.fov), aspect, c.nearClip, std::min(c.farClip, 30.0f));
+                    : glm::perspectiveRH_ZO(2.0f * std::atan(std::tan(glm::radians(c.fov) * 0.5f) / aspect), aspect, c.nearClip, std::min(c.farClip, 30.0f));
                 glm::mat4 inv = glm::inverse(proj * rv.view);
                 glm::vec3 corners[8];
                 for (int i = 0; i < 8; ++i)

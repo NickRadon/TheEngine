@@ -26,8 +26,7 @@ public class SplitFirstPersonController : MonoBehaviour
     public float turnSpeed = 120f;
     public float lookKeySpeed = 65f;
     public float movementDamping = 0.12f;
-    public float maxPitch = 80f;
-    public float maxYaw = 60f;
+    public float maxPitch = 89f;
     public float viewRigLowerOnLookDown = 0.35f;
 
     Animator bodyAnimator;
@@ -35,7 +34,6 @@ public class SplitFirstPersonController : MonoBehaviour
     InputActionAsset actions;
     Vector3 viewRigBasePosition;
     float pitch;
-    float yaw;
 
     string Action(string name) => actionMap + "/" + name;
 
@@ -48,6 +46,8 @@ public class SplitFirstPersonController : MonoBehaviour
         if (viewAnimator == null) Debug.LogError("SplitFirstPersonController needs an assigned view-rig Animator.");
         try { actions = InputActionAsset.Load(inputActions); }
         catch (Exception e) { Debug.LogError("Could not load input actions: " + e.Message); }
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
     }
 
     void Update()
@@ -65,13 +65,13 @@ public class SplitFirstPersonController : MonoBehaviour
             bodyAnimator.SetFloat(moveYParameter, y * gait, movementDamping, Time.deltaTime);
             bodyAnimator.SetFloat(speedParameter, length * gait);
         }
-        transform.Rotate(0f, -actions.ReadFloat(Action(turnAction)) * turnSpeed * Time.deltaTime, 0f);
-
         Vector2 look = actions.ReadVector2(Action(lookAction));
         Vector2 lookKeys = actions.ReadVector2(Action(lookKeysAction));
         pitch = Mathf.Clamp(pitch + look.y + lookKeys.y * lookKeySpeed * Time.deltaTime, -maxPitch, maxPitch);
-        yaw = Mathf.Clamp(yaw + look.x + lookKeys.x * lookKeySpeed * Time.deltaTime, -maxYaw, maxYaw);
-        if (cameraObject != null) cameraObject.transform.localRotation = Quaternion.Euler(pitch, yaw, 0f);
+        float turn = actions.ReadFloat(Action(turnAction)) * turnSpeed * Time.deltaTime;
+        float yawDelta = look.x + lookKeys.x * lookKeySpeed * Time.deltaTime + turn;
+        transform.Rotate(0f, -yawDelta, 0f);
+        if (cameraObject != null) cameraObject.transform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
         if (viewRig != null)
         {
             float down = Mathf.Clamp(-pitch / (maxPitch > 1f ? maxPitch : 1f), 0f, 1f);

@@ -748,8 +748,16 @@ void Editor::DrawInspector()
             }
             else
             {
-                EditorUI::PropertyLabel("Field of View");
+                EditorUI::PropertyLabel("Horizontal FOV");
+                ImGui::SetNextItemWidth(-80.0f);
                 if (ImGui::SliderFloat("##fov", &c.fov, 1.0f, 179.0f, "%.1f")) MarkEdited();
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::InputFloat("##fovValue", &c.fov, 0.0f, 0.0f, "%.1f"))
+                {
+                    c.fov = std::clamp(c.fov, 1.0f, 179.0f);
+                    MarkEdited();
+                }
             }
             EditorUI::PropertyLabel("Clipping Near");
             if (ImGui::DragFloat("##near", &c.nearClip, 0.01f, 0.01f, c.farClip - 0.01f)) MarkEdited();

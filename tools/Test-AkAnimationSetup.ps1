@@ -22,7 +22,8 @@ if (-not $sceneText.Contains('entity 1 4 1 "Main Camera"') -or
 $splitSetup = $sceneText.Contains('script 1 "SplitFirstPersonController"')
 $scriptName = if ($splitSetup) { 'SplitFirstPersonController.cs' } else { 'AKAimController.cs' }
 $aimScript = Get-Content -LiteralPath (Join-Path $project "Assets/Scripts/$scriptName") -Raw
-if (-not $aimScript.Contains('localRotation = Quaternion.Euler(pitch, yaw, 0f)')) {
+if (-not $aimScript.Contains('localRotation = Quaternion.Euler(pitch, 0f, 0f)') -or
+    -not $aimScript.Contains('transform.Rotate(0f, -yawDelta, 0f)')) {
     throw 'AK camera rotation is not driven by the Player aim input.'
 }
 $inputPath = Join-Path $project 'Assets/Input/AK_Player.inputactions'
@@ -69,7 +70,7 @@ Add-Type -AssemblyName System.Drawing
 foreach ($case in @(
     @{ name = 'locomotion'; keys = 'W'; image = 'split-locomotion.png'; external = 'split-locomotion-external.png' },
     @{ name = 'aim-locomotion'; keys = 'W,I,J'; image = 'split-aim-locomotion.png'; external = 'split-aim-locomotion-external.png' },
-    @{ name = 'mouse-look'; keys = 'W,Mouse1'; mouse = '60,-30'; image = 'split-mouse-look.png'; external = 'split-mouse-look-external.png' },
+    @{ name = 'mouse-look'; keys = 'W'; mouse = '60,-30'; image = 'split-mouse-look.png'; external = 'split-mouse-look-external.png' },
     @{ name = 'look-down'; keys = 'W,K'; seconds = 4; frame = '07'; image = 'split-look-down.png'; external = 'split-look-down-external.png' }
 )) {
     $capture = Join-Path $OutputDir $case.name
@@ -125,8 +126,13 @@ foreach ($case in @(
     if ($case.name -eq 'mouse-look') {
         $forwards = @($lines | Select-String -Pattern 'camera pos .* forward \(([-0-9.]+)' |
             ForEach-Object { [double]::Parse($_.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) })
-        if ($forwards.Count -eq 0 -or [Math]::Abs($forwards[-1]) -lt 0.2) {
-            throw 'Mouse look binding did not turn the camera.'
+        if ($forwards.Count -eq 0 -or $forwards[-1] -lt 0.2) {
+            throw 'Mouse X did not turn the camera right without holding a button.'
+        }
+        $upwards = @($lines | Select-String -Pattern 'camera pos .* forward \([-0-9.]+ ([-0-9.]+)' |
+            ForEach-Object { [double]::Parse($_.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) })
+        if ($upwards.Count -eq 0 -or $upwards[-1] -lt 0.1) {
+            throw 'Mouse Y did not pitch the camera up in the expected direction.'
         }
     }
     if ($case.name -eq 'look-down') {

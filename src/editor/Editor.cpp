@@ -15,6 +15,7 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -206,7 +207,7 @@ RenderView Editor::MakeCameraView(const Entity& cam, float aspect, float time) c
     if (c.orthographic)
         rv.proj = glm::orthoRH_ZO(-c.orthoSize * aspect, c.orthoSize * aspect, -c.orthoSize, c.orthoSize, c.nearClip, c.farClip);
     else
-        rv.proj = glm::perspectiveRH_ZO(glm::radians(c.fov), aspect, c.nearClip, c.farClip);
+        rv.proj = glm::perspectiveRH_ZO(2.0f * std::atan(std::tan(glm::radians(c.fov) * 0.5f) / aspect), aspect, c.nearClip, c.farClip);
     rv.cameraPos = pos;
     rv.orthographic = c.orthographic;
     rv.nearClip = c.nearClip;

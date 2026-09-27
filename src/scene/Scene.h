@@ -58,7 +58,7 @@ struct LightComponent
 struct CameraComponent
 {
     bool enabled = false;
-    float fov = 60.0f;
+    float fov = 90.0f; // horizontal field of view in degrees
     float nearClip = 0.3f;
     float farClip = 1000.0f;
     bool orthographic = false;
