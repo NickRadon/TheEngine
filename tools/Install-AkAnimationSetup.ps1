@@ -33,24 +33,13 @@ if (-not $locomotionController.StartsWith('TheEngineAnimator 1')) {
 }
 $controller = "TheEngineAnimator 4`nlayer ""Base Layer"" 1 override`n" +
     $locomotionController.Substring($locomotionController.IndexOf("`n") + 1).TrimEnd() + "`n" + @'
-layer "AK Upper" 1 override @meshspace @mask "Assets/AK/Masks/UpperBody.mask"
+layer "AK Upper" 1 override "spine_01" "ik_hand_gun" "ik_hand_l" "ik_hand_r" @meshspace
 state "AK Idle" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 1 1 320 140
 default "AK Idle"
 entry 40 140
 any 40 300
 '@
 Set-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Aim.controller') -Value $controller
-
-$maskDir = Join-Path $project 'Assets/AK/Masks'
-New-Item -ItemType Directory -Force -Path $maskDir | Out-Null
-$mask = @'
-TheEngineMask 1
-bone "spine_01"
-bone "ik_hand_gun"
-bone "ik_hand_l"
-bone "ik_hand_r"
-'@
-Set-Content -LiteralPath (Join-Path $maskDir 'UpperBody.mask') -Value $mask
 
 $inputDir = Join-Path $project 'Assets/Input'
 New-Item -ItemType Directory -Force -Path $inputDir | Out-Null

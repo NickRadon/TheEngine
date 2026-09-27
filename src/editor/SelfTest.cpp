@@ -1459,6 +1459,59 @@ public class AnimApiDefaults : MonoBehaviour
         std::snprintf(msg, sizeof(msg), "walking pelvis %.2f rad, FP spine model rotation %.2f rad", pelvisModelAngle, spineModelAngle);
         t.Check(std::fabs(pelvisModelAngle - 0.45f) < 0.01f && std::fabs(spineModelAngle - 0.8f) < 0.01f, msg);
 
+        // IK markers are separate skeleton branches on the AE character. Walking pelvis motion
+        // must not displace the FP weapon and hand markers when the layer overrides them.
+        Skeleton split;
+        split.names = { "root", "pelvis", "thigh_l", "spine_01", "hand_l", "ik_hand_gun", "ik_hand_l", "ik_hand_r" };
+        split.parents = { -1, 0, 1, 1, 3, 1, 1, 1 };
+        split.rest.resize(split.names.size());
+        for (int b = 0; b < static_cast<int>(split.names.size()); ++b) split.index[split.names[b]] = b;
+        split.root = 0;
+        split.pelvis = 1;
+        auto makeSplitClip = [&](const char* name, float pelvisX, float legAngle, float weaponX) {
+            AnimationClip clip;
+            clip.name = name;
+            clip.fps = 1.0f;
+            clip.duration = 1.0f;
+            clip.frameCount = 2;
+            for (int b = 0; b < static_cast<int>(split.names.size()); ++b)
+            {
+                AnimationClip::Track track;
+                track.bone = split.names[b];
+                track.rest = split.rest[b];
+                track.frames = { split.rest[b], split.rest[b] };
+                if (b == 1) track.frames[1].t.x = pelvisX;
+                if (b == 2) track.frames[1].r = glm::angleAxis(legAngle, glm::vec3(0, 0, 1));
+                if (b >= 5) track.frames[1].t.x = weaponX + static_cast<float>(b - 5) * 0.1f;
+                clip.trackIndex[track.bone] = b;
+                clip.tracks.push_back(track);
+            }
+            return clip;
+        };
+        clips.Add("masktest:splitwalk", makeSplitClip("split walk", 2.0f, 0.5f, 9.0f));
+        clips.Add("masktest:splitfp", makeSplitClip("split fp", 0.0f, 0.0f, 1.0f));
+        AnimatorController splitController;
+        splitController.Base().states = { idle };
+        splitController.Base().states[0].clip = "masktest:splitwalk";
+        splitController.Base().defaultState = "Idle";
+        AnimLayer splitUpper;
+        splitUpper.name = "AK Upper";
+        splitUpper.mask = { "spine_01", "ik_hand_gun", "ik_hand_l", "ik_hand_r" };
+        splitUpper.meshSpaceRotation = true;
+        splitUpper.states = { raise };
+        splitUpper.states[0].clip = "masktest:splitfp";
+        splitUpper.defaultState = "Raise";
+        splitController.layers.push_back(splitUpper);
+        instance.Reset(splitController);
+        instance.Update(1.0f, clips, split, false, pose, motion);
+        PoseToModel(split, pose, splitModel);
+        const bool exactSplit = std::fabs(pose[1].t.x - 2.0f) < 1e-4f &&
+                                std::fabs(2.0f * std::acos(std::clamp(pose[2].r.w, -1.0f, 1.0f)) - 0.5f) < 0.01f &&
+                                std::fabs(glm::vec3(splitModel[5][3]).x - 1.0f) < 1e-4f &&
+                                std::fabs(glm::vec3(splitModel[6][3]).x - 1.1f) < 1e-4f &&
+                                std::fabs(glm::vec3(splitModel[7][3]).x - 1.2f) < 1e-4f;
+        t.Check(exactSplit, "pelvis and leg use locomotion while spine and all hand/weapon IK markers use FP");
+
         AnimatorController missing = controller;
         missing.layers[1].maskAsset = "Assets/_missing_test.mask";
         missing.layers[1].RefreshMaskAsset();

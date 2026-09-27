@@ -35,10 +35,14 @@ if (-not $sceneText.Contains('"spine_01,spine_02,spine_03,spine_04,spine_05"')) 
     throw 'AK look rotation must use the AE Master five-bone spine chain.'
 }
 $controllerText = Get-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Aim.controller') -Raw
-$maskText = Get-Content -LiteralPath (Join-Path $project 'Assets/AK/Masks/UpperBody.mask') -Raw
+$maskPath = Join-Path $project 'Assets/AK/Masks/UpperBody.mask'
+$maskText = if (Test-Path -LiteralPath $maskPath) { Get-Content -LiteralPath $maskPath -Raw } else { '' }
+$inlineSplit = $controllerText.Contains('layer "AK Upper" 1 override "spine_01" "ik_hand_gun" "ik_hand_l" "ik_hand_r" @meshspace')
+$assetSplit = $controllerText.Contains('layer "AK Upper" 1 override @meshspace @mask "Assets/AK/Masks/UpperBody.mask"') -and
+    $maskText.Contains('bone "spine_01"') -and $maskText.Contains('bone "ik_hand_gun"') -and
+    $maskText.Contains('bone "ik_hand_l"') -and $maskText.Contains('bone "ik_hand_r"')
 if (-not $controllerText.Contains('layer "Base Layer" 1 override') -or
-    -not $controllerText.Contains('layer "AK Upper" 1 override @meshspace @mask "Assets/AK/Masks/UpperBody.mask"') -or
-    -not $maskText.Contains('bone "spine_01"')) {
+    -not ($inlineSplit -or $assetSplit)) {
     throw 'The locomotion base and spine_01 AK override mask are not configured.'
 }
 if (-not [System.IO.Path]::IsPathRooted($OutputDir)) { $OutputDir = Join-Path $repo $OutputDir }

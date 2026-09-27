@@ -289,6 +289,15 @@ void Editor::DrawAnimator()
     if (ImGui::SmallButton("Frame All")) m_AnimFrameRequest = true;
     ImGui::SameLine();
     if (ImGui::SmallButton("Show in Project")) SelectAsset(m_AnimCtrlPath);
+    if (live)
+    {
+        const Entity* animated = m_Scene.Find(live);
+        if (animated && !animated->animator.rig.empty())
+        {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Edit Rig Graph")) OpenRig(animated->animator.rig);
+        }
+    }
     ImGui::Separator();
 
     const float leftW = 210.0f, rightW = 300.0f;
@@ -452,6 +461,16 @@ void Editor::DrawAnimator()
     }
     if (m_AnimLayer > 0)
     {
+        ImGui::TextDisabled("Pose source and bone split");
+        if (ImGui::Button("Use spine_01 upper body + weapon IK", ImVec2(-FLT_MIN, 0)))
+        {
+            layer.maskAsset.clear();
+            layer.mask = { "spine_01", "ik_hand_gun", "ik_hand_l", "ik_hand_r" };
+            layer.blending = AnimLayerBlending::Override;
+            layer.meshSpaceRotation = true;
+            MarkAnimEdited();
+        }
+        ImGui::TextWrapped("This layer owns spine_01 and every child, plus the three AK IK targets. The base layer owns pelvis and legs.");
         float weight = instance ? instance->LayerWeight(m_AnimLayer) : layer.weight;
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::SliderFloat("##layerWeight", &weight, 0.0f, 1.0f, "Weight %.2f"))
@@ -539,7 +558,7 @@ void Editor::DrawAnimator()
             char maskText[256];
             std::snprintf(maskText, sizeof(maskText), "%s", mask.c_str());
             ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::InputTextWithHint("##mask", "Inline mask bones (legacy)", maskText, sizeof(maskText), ImGuiInputTextFlags_EnterReturnsTrue))
+            if (ImGui::InputTextWithHint("##mask", "Bones owned by this layer", maskText, sizeof(maskText), ImGuiInputTextFlags_EnterReturnsTrue))
             {
                 layer.mask.clear();
                 std::string token;

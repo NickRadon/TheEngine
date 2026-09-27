@@ -893,7 +893,17 @@ void AnimatorInstance::Update(float dt, ClipLibrary& clips, const Skeleton& skel
                     const glm::quat target = glm::slerp(baseModel, glm::dot(baseModel, layerModel) < 0.0f ? -layerModel : layerModel, w);
                     const glm::quat parentModel = glm::normalize(glm::quat_cast(glm::mat3(m_BaseModel[parent])));
                     pose[b].r = glm::normalize(glm::inverse(parentModel) * target);
-                    pose[b].t = glm::mix(pose[b].t, m_LayerPose[b].t, w);
+                    // IK targets often sit outside the deforming spine hierarchy. Their model-space
+                    // position must come from the FP clip as well, or walking hips drag the weapon
+                    // and hand targets even though these bones are inside the upper-body mask.
+                    if (skeleton.names[b].rfind("ik_", 0) == 0)
+                    {
+                        const glm::vec3 basePosition(m_BaseModel[b][3]);
+                        const glm::vec3 layerPosition(m_LayerModel[b][3]);
+                        const glm::vec3 modelPosition = glm::mix(basePosition, layerPosition, w);
+                        pose[b].t = glm::vec3(glm::inverse(m_BaseModel[parent]) * glm::vec4(modelPosition, 1.0f));
+                    }
+                    else pose[b].t = glm::mix(pose[b].t, m_LayerPose[b].t, w);
                 }
                 else pose[b] = Blend(pose[b], m_LayerPose[b], w);
             }
