@@ -14,16 +14,24 @@ public class AkArmsController : MonoBehaviour
     public bool invertHorizontal = false;
     public bool invertVertical = false;
     public float maxPitch = 89f;
+    public float aimBlendSpeed = 10f;
+    public float aimRigOffsetX = -0.04f;
+    public float aimRigOffsetY = 0.04f;
+    public float aimRigOffsetZ = -0.08f;
 
     InputActionAsset actions;
     Animator arms;
     Animator weapon;
     float pitch;
+    float aimWeight;
+    int aimLayer = -1;
+    Vector3 armsBasePosition;
 
     void Start()
     {
         arms = armsObject?.GetComponent<Animator>();
         weapon = weaponObject?.GetComponent<Animator>();
+        if (armsObject != null) armsBasePosition = armsObject.transform.localPosition;
         if (arms == null || weapon == null || cameraObject == null)
             Debug.LogError("Assign camera, arms, and weapon to AkArmsController.");
         try { actions = InputActionAsset.Load(inputActions); }
@@ -55,6 +63,15 @@ public class AkArmsController : MonoBehaviour
         {
             arms.SetBool("Moving", moving);
             arms.SetBool("Sprinting", sprinting);
+            if (aimLayer < 0) aimLayer = arms.GetLayerIndex("Aim");
+            float target = actions.IsPressed("Player/Aim") ? 1f : 0f;
+            aimWeight += (target - aimWeight) * Mathf.Clamp(Time.deltaTime * aimBlendSpeed, 0f, 1f);
+            if (aimLayer >= 0) arms.SetLayerWeight(aimLayer, aimWeight);
+            if (armsObject != null)
+                armsObject.transform.localPosition = new Vector3(
+                    armsBasePosition.x + aimRigOffsetX * aimWeight,
+                    armsBasePosition.y + aimRigOffsetY * aimWeight,
+                    armsBasePosition.z + aimRigOffsetZ * aimWeight);
         }
         if (actions.WasPressedThisFrame("Player/Fire")) weapon?.SetTrigger("Fire");
         if (actions.WasPressedThisFrame("Player/MagCheck")) TriggerBoth("MagCheck");

@@ -481,6 +481,12 @@ void Editor::DrawAnimator()
         int blending = static_cast<int>(layer.blending);
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::Combo("##blending", &blending, "Override Additive ")) { layer.blending = static_cast<AnimLayerBlending>(blending); MarkAnimEdited(); }
+        if (layer.blending == AnimLayerBlending::Additive)
+        {
+            ImGui::TextDisabled("Neutral reference clip");
+            if (ClipField("referenceClip", layer.referenceClip)) MarkAnimEdited();
+            ImGui::TextWrapped("Pose offsets are measured against this clip's first frame. Leave empty to use the selected state's first frame.");
+        }
         ImGui::TextDisabled("Mask Asset");
         const std::string maskLabel = layer.maskAsset.empty() ? "None (Blend Mask)" : fs::path(layer.maskAsset).stem().string();
         if (ImGui::Button(maskLabel.c_str(), ImVec2(-FLT_MIN, 0))) ImGui::OpenPopup("MaskPicker");
@@ -1204,6 +1210,31 @@ void Editor::DrawAnimatorSelection(AnimatorController& ctrl, AnimatorInstance* i
             ImGui::TextDisabled("X: %s   Y: %s", s.paramX.c_str(), s.paramY.c_str());
         }
     }
+
+    ImGui::SeparatorText("Pose Offsets");
+    ImGui::TextWrapped("Model-space adjustments added to this state before layer blending.");
+    int removeOffset = -1;
+    for (size_t i = 0; i < s.offsets.size(); ++i)
+    {
+        AnimPoseOffset& offset = s.offsets[i];
+        ImGui::PushID(static_cast<int>(i));
+        char bone[128];
+        std::snprintf(bone, sizeof(bone), "%s", offset.bone.c_str());
+        ImGui::TextDisabled("Bone");
+        if (ImGui::InputText("##offsetBone", bone, sizeof(bone), ImGuiInputTextFlags_EnterReturnsTrue))
+        { offset.bone = bone; MarkAnimEdited(); }
+        ImGui::TextDisabled("Position (model-space meters)");
+        if (ImGui::DragFloat3("##offsetPos", &offset.position.x, 0.005f, 0.0f, 0.0f, "%.3f")) MarkAnimEdited();
+        glm::vec3 angles = glm::degrees(glm::eulerAngles(offset.rotation));
+        ImGui::TextDisabled("Rotation (degrees)");
+        if (ImGui::DragFloat3("##offsetRot", &angles.x, 0.5f, 0.0f, 0.0f, "%.1f"))
+        { offset.rotation = glm::quat(glm::radians(angles)); MarkAnimEdited(); }
+        if (ImGui::SmallButton("Remove offset")) removeOffset = static_cast<int>(i);
+        ImGui::Separator();
+        ImGui::PopID();
+    }
+    if (removeOffset >= 0) { s.offsets.erase(s.offsets.begin() + removeOffset); MarkAnimEdited(); }
+    if (ImGui::Button("+ Pose offset")) { s.offsets.emplace_back(); MarkAnimEdited(); }
 
     // Transitions from this state
     ImGui::SeparatorText("Transitions");

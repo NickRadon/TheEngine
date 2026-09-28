@@ -1104,6 +1104,33 @@ void Editor::EnableSelfTest(const std::string& captureDir, bool animationOnly)
         std::snprintf(msg, sizeof(msg), "additive layers add the difference to their first frame (pelvis %.2f)", pose[1].t.y);
         t.Check(std::fabs(pose[1].t.y - 1.2f) < 1e-3f, msg);
 
+        // A held pose offset needs a separate neutral reference; otherwise the state's own first
+        // frame would subtract the offset back out. The base action must keep playing underneath.
+        lc.Base().states[0].clip = "i:raise";
+        lc.Base().states[0].speed = 4.0f;
+        lc.Base().states[0].loop = false;
+        lc.layers[1].mask = { "spine_01" };
+        lc.layers[1].referenceClip = "i:idle";
+        lc.layers[1].states[0].clip = "i:idle";
+        lc.layers[1].states[0].speed = 0.0f;
+        AnimPoseOffset aimOffset;
+        aimOffset.bone = "spine_01";
+        aimOffset.position.x = 0.1f;
+        lc.layers[1].states[0].offsets = { aimOffset };
+        li.Reset(lc);
+        run(li, 0.3f, false);
+        std::snprintf(msg, sizeof(msg), "additive pose offset combines with an action (offset %.2f m, twist %.2f rad)",
+                      pose[2].t.x, spineTwist());
+        t.Check(std::fabs(pose[2].t.x - 0.1f) < 1e-3f && std::fabs(spineTwist() - 0.6f) < 0.01f, msg);
+        li.SetLayerWeight(1, 0.5f);
+        run(li, 0.1f, false);
+        t.Check(std::fabs(pose[2].t.x - 0.05f) < 1e-3f, "additive pose offset follows the script-controlled layer weight");
+        AnimatorController roundTripAim;
+        t.Check(roundTripAim.LoadString(lc.ToString()) && roundTripAim.layers[1].referenceClip == "i:idle" &&
+                    roundTripAim.layers[1].states[0].offsets.size() == 1 &&
+                    std::fabs(roundTripAim.layers[1].states[0].offsets[0].position.x - 0.1f) < 1e-4f,
+                "additive reference and pose offsets survive controller serialization");
+
         // ---------- Exit time on a non-looping state fires once ----------
         AnimatorController xc;
         AnimState long1; long1.name = "Long"; long1.clip = "i:raise"; long1.loop = false;
@@ -1168,13 +1195,13 @@ void Editor::EnableSelfTest(const std::string& captureDir, bool animationOnly)
         // ---------- Current format round trip, plus version 3 compatibility ----------
         const std::string text = ic.ToString();
         AnimatorController current;
-        const bool currentOk = current.LoadString(text) && text.rfind("TheEngineAnimator 4", 0) == 0 &&
+        const bool currentOk = current.LoadString(text) && text.rfind("TheEngineAnimator 5", 0) == 0 &&
                                text.find(" interrupt next ordered 0") != std::string::npos &&
                                current.Base().transitions.size() == 2 &&
                                current.Base().transitions[0].interruption == AnimInterruption::Next &&
                                !current.Base().transitions[0].ordered &&
                                current.Base().transitions[1].interruption == AnimInterruption::None;
-        t.Check(currentOk, "version 4 .controller files store and reload the interruption settings");
+        t.Check(currentOk, "version 5 .controller files store and reload the interruption settings");
 
         const std::string v3 =
             "TheEngineAnimator 3\n"
@@ -1393,11 +1420,11 @@ public class AnimApiDefaults : MonoBehaviour
         AnimatorController loaded;
         std::ifstream controllerFile(controllerPath);
         const std::string controllerText((std::istreambuf_iterator<char>(controllerFile)), std::istreambuf_iterator<char>());
-        const bool v4ok = loaded.Load(controllerPath) && controllerText.rfind("TheEngineAnimator 4", 0) == 0 &&
+        const bool v4ok = loaded.Load(controllerPath) && controllerText.rfind("TheEngineAnimator 5", 0) == 0 &&
                           controllerText.find("@mask \"Assets/_test.mask\"") != std::string::npos &&
                           loaded.layers.size() == 2 && loaded.layers[1].maskAsset == maskPath &&
                           loaded.layers[1].EffectiveMask() == source.bones;
-        t.Check(v4ok, "version 4 controllers preserve a blend mask reference and resolve its bones");
+        t.Check(v4ok, "version 5 controllers preserve a blend mask reference and resolve its bones");
 
         Skeleton skeleton;
         skeleton.names = { "root", "pelvis", "spine_01" };

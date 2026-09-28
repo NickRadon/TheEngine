@@ -1,6 +1,7 @@
 param(
     [string]$ProjectRoot = 'C:\Users\nickr\Desktop\AnimationFresh',
     [string]$ReviewDir = 'docs/test-captures/animation-fresh-ak',
+    [string]$EnginePath = 'build/Debug/TheEngine.exe',
     [string[]]$OnlyCases = @(),
     [switch]$SkipBuild
 )
@@ -15,7 +16,7 @@ if (-not $SkipBuild) {
     & cmake --build (Join-Path $repo 'build') --config Debug --target TheEngine
     if ($LASTEXITCODE -ne 0) { throw 'TheEngine build failed.' }
 }
-$engine = Join-Path $repo 'build/Debug/TheEngine.exe'
+$engine = if ([System.IO.Path]::IsPathRooted($EnginePath)) { $EnginePath } else { Join-Path $repo $EnginePath }
 $output = Join-Path $repo 'build/test-captures/animation-fresh-ak'
 New-Item -ItemType Directory -Force -Path $output,$ReviewDir | Out-Null
 Add-Type -AssemblyName System.Drawing
@@ -24,6 +25,13 @@ $cases = @(
     @{ name='walk'; args=@('--hold','W'); arms='Walk'; weapon='Idle' },
     @{ name='sprint'; args=@('--hold','W,LeftShift'); arms='Sprint'; weapon='Idle'; seconds='2.2'; frame='03' },
     @{ name='fire'; args=@('--press','Mouse0@0.25'); arms='Idle'; weapon='Fire' },
+    @{ name='aim'; args=@('--hold','Mouse1'); arms='Idle'; weapon='Idle' },
+    @{ name='aim-walk'; args=@('--hold','Mouse1,W'); arms='Walk'; weapon='Idle' },
+    @{ name='aim-sprint'; args=@('--hold','Mouse1,W,LeftShift'); arms='Sprint'; weapon='Idle'; seconds='2.2'; frame='03' },
+    @{ name='aim-fire'; args=@('--hold','Mouse1','--press','Mouse0@0.25'); arms='Idle'; weapon='Fire' },
+    @{ name='aim-reload'; args=@('--hold','Mouse1','--press','R@0.25'); arms='Reload'; weapon='Reload'; seconds='2.5'; frame='04' },
+    @{ name='aim-mag-check'; args=@('--hold','Mouse1','--press','M@0.25'); arms='MagCheck'; weapon='MagCheck'; seconds='2.5'; frame='04' },
+    @{ name='aim-inspect'; args=@('--hold','Mouse1','--press','I@0.25'); arms='Inspect'; weapon='Inspect'; seconds='2.5'; frame='04' },
     @{ name='mag-check'; args=@('--press','M@0.25'); arms='MagCheck'; weapon='MagCheck'; seconds='2.5'; frame='04' },
     @{ name='inspect'; args=@('--press','I@0.25'); arms='Inspect'; weapon='Inspect'; seconds='2.5'; frame='04' },
     @{ name='reload'; args=@('--press','R@0.25'); arms='Reload'; weapon='Reload'; seconds='2.5'; frame='04' }
@@ -43,7 +51,14 @@ foreach ($case in $cases) {
     if ($arms.Count -eq 0 -or $weapon.Count -eq 0) {
         throw "$($case.name): expected arms=$($case.arms), weapon=$($case.weapon) not observed. $($lines -join [Environment]::NewLine)"
     }
-    if ($case.name -eq 'reload') {
+    if ($case.name -like 'aim*') {
+        $weights = @($lines | ForEach-Object { if ($_ -match 'aim layer weight ([-\d.]+)') { [double]$Matches[1] } })
+        if ($weights.Count -eq 0 -or ($weights | Measure-Object -Maximum).Maximum -lt 0.8) {
+            throw "$($case.name): aim layer did not reach weight 0.8."
+        }
+        Write-Output "$($case.name): aim layer max weight $([Math]::Round(($weights | Measure-Object -Maximum).Maximum, 3))"
+    }
+    if ($case.name -in @('reload','aim-reload')) {
         $magPositions = @($lines | ForEach-Object {
             if ($_ -match 'weapon mag2 local \(([-\d.]+) ([-\d.]+) ([-\d.]+)\)') {
                 [double[]]@([double]$Matches[1], [double]$Matches[2], [double]$Matches[3])
@@ -56,8 +71,8 @@ foreach ($case in $cases) {
                 [Math]::Pow($magPositions[$i + 2] - $magPositions[$i + 5], 2))
             $magMotion = [Math]::Max($magMotion, $distance)
         }
-        if ($magMotion -lt 0.1) { throw "reload: weapon magazine pose did not move (maximum sampled delta $magMotion m)." }
-        Write-Output "reload: weapon magazine pose delta $([Math]::Round($magMotion, 3)) m"
+        if ($magMotion -lt 0.1) { throw "$($case.name): weapon magazine pose did not move (maximum sampled delta $magMotion m)." }
+        Write-Output "$($case.name): weapon magazine pose delta $([Math]::Round($magMotion, 3)) m"
     }
     $frame = if ($case.ContainsKey('frame')) { $case.frame } else { '01' }
     $source = Join-Path $capture "play_$frame.bmp"

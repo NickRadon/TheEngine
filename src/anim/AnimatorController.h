@@ -30,6 +30,14 @@ struct BlendChild
     float speed = 1.0f;
 };
 
+// Model-space adjustment applied to a sampled state pose before layers are combined.
+struct AnimPoseOffset
+{
+    std::string bone;
+    glm::vec3 position{ 0.0f };
+    glm::quat rotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+};
+
 struct AnimState
 {
     std::string name;
@@ -37,6 +45,7 @@ struct AnimState
     std::string clip;              // Clip
     std::string paramX, paramY;    // blend tree parameters
     std::vector<BlendChild> children;
+    std::vector<AnimPoseOffset> offsets;
     float speed = 1.0f;
     bool loop = true;
     glm::vec2 position{ 0.0f };    // node position in the Animator window
@@ -86,6 +95,7 @@ struct AnimLayer
     std::string name = "Base Layer";
     float weight = 1.0f;
     AnimLayerBlending blending = AnimLayerBlending::Override;
+    std::string referenceClip; // optional neutral clip for additive deltas; empty = state's first frame
     std::vector<std::string> mask;  // inline bones whose subtrees this layer affects (empty = whole body)
     // Blend mask asset (.mask) shared with other controllers. When assigned it replaces `mask`.
     std::string maskAsset;
@@ -127,8 +137,8 @@ struct AnimIssue
 struct AnimatorController
 {
     static constexpr const char* kAnyState = AnimLayer::kAnyState;
-    // 1 = single layer, 2 = layers, 3 = interruption fields, 4 = layer blend mask asset
-    static constexpr int kCurrentVersion = 4;
+    // 1 = single layer, 2 = layers, 3 = interruption, 4 = blend mask, 5 = additive reference and pose offsets
+    static constexpr int kCurrentVersion = 5;
 
     std::vector<AnimParam> params;
     std::vector<AnimLayer> layers{ AnimLayer{} }; // layer 0 is the base layer

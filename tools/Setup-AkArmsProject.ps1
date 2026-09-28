@@ -73,7 +73,7 @@ function Transition([string]$from,[string]$to,[string]$param,[string]$mode,[bool
 }
 function ReturnToIdle([string]$from) { return "transition `"$from`" `"Idle`" 1 0.95 0.12 interrupt none ordered 0" }
 $a = [System.Collections.Generic.List[string]]::new()
-$a.Add('TheEngineAnimator 4')
+$a.Add('TheEngineAnimator 5')
 foreach ($param in @('Moving','Sprinting')) { $a.Add("param `"$param`" bool 0") }
 foreach ($param in @('MagCheck','Inspect','Reload','Draw','Holster','Melee','Regrip','ReloadEmpty')) { $a.Add("param `"$param`" trigger 0") }
 $a.Add('layer "Arms" 1 override')
@@ -92,10 +92,17 @@ foreach ($action in @('MagCheck','Inspect','Reload','ReloadEmpty','Draw','Holste
     $a.Add((Transition 'Any State' $action $action 'if')); $a.Add((ReturnToIdle $action))
 }
 $a.Add('default "Idle"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
+$a.Add('layer "Aim" 0 additive "ik_hand_gun" "ik_hand_l" "ik_hand_r"')
+$a.Add('reference "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx"')
+$a.Add('state "Aim" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 0 1 320 100')
+foreach ($bone in @('ik_hand_gun','ik_hand_l','ik_hand_r')) {
+    $a.Add("  poseoffset `"$bone`" -0.02 0.015 0 0 0 0 1")
+}
+$a.Add('default "Aim"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
 Set-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Arms.controller') -Value $a
 
 $w = [System.Collections.Generic.List[string]]::new()
-$w.Add('TheEngineAnimator 4')
+$w.Add('TheEngineAnimator 5')
 foreach ($param in @('Fire','MagCheck','Inspect','Reload','ReloadEmpty')) { $w.Add("param `"$param`" trigger 0") }
 $w.Add('layer "Weapon" 1 override')
 $weaponStates=[ordered]@{ Idle='Idle'; Fire='Fire'; MagCheck='Mag_Check'; Inspect='Inspect'; Reload='Tac_Reload'; ReloadEmpty='Empty_Reload' }
@@ -122,6 +129,7 @@ AddAction 'Look' 'Value' 'Vector2'; AddBinding 'Look' '<Mouse>/delta' '' $false 
 foreach($item in @(@('Sprint','<Keyboard>/leftShift'),@('Fire','<Mouse>/leftButton'),@('MagCheck','<Keyboard>/m'),@('Inspect','<Keyboard>/i'),@('Reload','<Keyboard>/r'))) {
     AddAction $item[0] 'Button' 'Button'; AddBinding $item[0] $item[1]
 }
+AddAction 'Aim' 'Button' 'Button'; AddBinding 'Aim' '<Mouse>/rightButton'
 $asset=[ordered]@{version=1;name='AK Controls';maps=@($map);controlSchemes=@()}
 $asset | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $project 'Assets/Input/AK_Controls.inputactions')
 

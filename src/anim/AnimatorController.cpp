@@ -1,6 +1,7 @@
 #include "anim/AnimatorController.h"
 
 #include "anim/BlendMask.h"
+#include "anim/AnimationStream.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,6 +60,7 @@ bool AnimatorController::Save(std::ostream& out) const
         // Version 4 field; version 1-3 readers would take the path for a bone name.
         if (!l.maskAsset.empty()) out << " @mask " << std::quoted(l.maskAsset);
         out << "\n";
+        if (!l.referenceClip.empty()) out << "reference " << std::quoted(l.referenceClip) << "\n";
         for (const AnimState& s : l.states)
         {
             out << "state " << std::quoted(s.name) << ' ' << kMotionNames[static_cast<int>(s.type)] << ' ' << std::quoted(s.clip) << ' '
@@ -66,6 +68,10 @@ bool AnimatorController::Save(std::ostream& out) const
                 << s.position.y << "\n";
             for (const BlendChild& c : s.children)
                 out << "  child " << std::quoted(c.clip) << ' ' << c.threshold << ' ' << c.position.x << ' ' << c.position.y << ' ' << c.speed << "\n";
+            for (const AnimPoseOffset& offset : s.offsets)
+                out << "  poseoffset " << std::quoted(offset.bone) << ' ' << offset.position.x << ' ' << offset.position.y << ' '
+                    << offset.position.z << ' ' << offset.rotation.x << ' ' << offset.rotation.y << ' ' << offset.rotation.z << ' '
+                    << offset.rotation.w << "\n";
         }
         for (const AnimTransition& t : l.transitions)
         {
@@ -140,6 +146,7 @@ bool AnimatorController::Load(std::istream& file)
             }
             c.layers.push_back(l);
         }
+        else if (key == "reference") in >> std::quoted(layer().referenceClip);
         else if (key == "state")
         {
             AnimState s;
@@ -154,6 +161,14 @@ bool AnimatorController::Load(std::istream& file)
             BlendChild ch;
             in >> std::quoted(ch.clip) >> ch.threshold >> ch.position.x >> ch.position.y >> ch.speed;
             layer().states.back().children.push_back(ch);
+        }
+        else if (key == "poseoffset" && !layer().states.empty())
+        {
+            AnimPoseOffset offset;
+            in >> std::quoted(offset.bone) >> offset.position.x >> offset.position.y >> offset.position.z >>
+                offset.rotation.x >> offset.rotation.y >> offset.rotation.z >> offset.rotation.w;
+            offset.rotation = glm::normalize(offset.rotation);
+            layer().states.back().offsets.push_back(offset);
         }
         else if (key == "transition")
         {
@@ -238,6 +253,8 @@ std::vector<AnimIssue> AnimatorController::Validate(ClipLibrary* clips, const Sk
         if (l.defaultState.empty()) add(layer, -1, -1, "Layer '" + l.name + "' has no default state.");
         else if (l.FindState(l.defaultState) < 0)
             add(layer, -1, -1, "Layer '" + l.name + "': default state '" + l.defaultState + "' does not exist.");
+        if (!l.referenceClip.empty() && clips && !clips->Get(l.referenceClip))
+            add(layer, -1, -1, "Layer '" + l.name + "': reference clip '" + l.referenceClip + "' could not be loaded.");
 
         // States
         for (size_t si = 0; si < l.states.size(); ++si)
@@ -246,6 +263,10 @@ std::vector<AnimIssue> AnimatorController::Validate(ClipLibrary* clips, const Sk
             const int state = static_cast<int>(si);
             if (si != static_cast<size_t>(l.FindState(s.name)))
                 add(layer, state, -1, "Layer '" + l.name + "': duplicate state name '" + s.name + "'.");
+            if (skeleton)
+                for (const AnimPoseOffset& offset : s.offsets)
+                    if (skeleton->Find(offset.bone) < 0)
+                        add(layer, state, -1, "State '" + s.name + "': pose offset bone '" + offset.bone + "' is not in the rig.");
             if (s.type == AnimMotionType::Clip)
             {
                 if (s.clip.empty()) add(layer, state, -1, "State '" + s.name + "' has no clip: it plays the rest pose.");
@@ -536,6 +557,19 @@ void AnimatorInstance::EvaluateState(const AnimState& state, float normalizedTim
             for (size_t i = 0; i < out.size(); ++i) out[i] = Blend(out[i], sample[i], t);
         }
         accumulated += c.weight;
+    }
+    if (!state.offsets.empty())
+    {
+        RootMotion ignored;
+        AnimationStream stream(skeleton, out, ignored);
+        for (const AnimPoseOffset& offset : state.offsets)
+        {
+            const BoneHandle bone = stream.Bind(offset.bone);
+            if (!stream.Valid(bone)) continue;
+            const glm::mat4 current = stream.Model(bone);
+            const glm::mat4 adjusted = glm::translate(glm::mat4(1.0f), offset.position) * glm::mat4_cast(offset.rotation) * current;
+            stream.SetModel(bone, adjusted);
+        }
     }
 }
 
@@ -915,10 +949,13 @@ void AnimatorInstance::Update(float dt, ClipLibrary& clips, const Skeleton& skel
         }
         else
         {
-            // Additive: the difference from the state's first frame is added on top (Unity's reference pose).
+            // Additive: use an explicit neutral clip when supplied, so a held pose offset does not
+            // cancel itself against the state's first frame.
             const LayerState& ls = m_Layers[i];
             if (ls.current < 0) continue;
-            EvaluateState(layer.states[ls.current], 0.0f, clips, skeleton, true, m_RefPose);
+            if (const AnimationClip* reference = layer.referenceClip.empty() ? nullptr : clips.Get(layer.referenceClip))
+                SampleClip(*reference, clips.Binding(reference, &skeleton), skeleton, 0.0f, true, m_RefPose);
+            else EvaluateState(layer.states[ls.current], 0.0f, clips, skeleton, true, m_RefPose);
             for (size_t b = 0; b < pose.size(); ++b)
             {
                 if (!mask[b]) continue;

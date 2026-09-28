@@ -2,6 +2,7 @@ param(
     [string]$AeAssets,
     [string]$OutputDir = 'build/test-captures/ak',
     [string]$ReviewDir = 'docs/test-captures/ak',
+    [string]$EnginePath = 'build/Debug/TheEngine.exe',
     [switch]$SkipBuild,
     [switch]$ProcessOnly
 )
@@ -48,7 +49,7 @@ if (-not $ProcessOnly) {
         if ($buildExit -ne 0) { throw "Build failed ($buildExit). See $(Join-Path $OutputDir 'build.log')" }
     }
 
-    $engine = Join-Path $repo 'build/Debug/TheEngine.exe'
+    $engine = if ([System.IO.Path]::IsPathRooted($EnginePath)) { $EnginePath } else { Join-Path $repo $EnginePath }
     if (-not (Test-Path -LiteralPath $engine -PathType Leaf)) { throw "Engine executable missing: $engine" }
     $previousAeAssets = $env:THEENGINE_AE_ASSETS
     $previousErrorAction = $ErrorActionPreference

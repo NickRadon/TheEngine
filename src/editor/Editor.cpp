@@ -1254,6 +1254,16 @@ void Editor::RunPlaytest()
             }
             LOG_INFO("[playtest] t=%.2f %s pos (%.3f %.3f %.3f) yaw %.1f state %s fps %.0f", m_PlayTime, e.name.c_str(), pos.x, pos.y, pos.z,
                      e.transform.euler.y, state.c_str(), m_Fps);
+            if (e.name == "AK Arms")
+            {
+                if (AnimatorInstance* inst = m_Animation.Instance(e.id))
+                    for (size_t layer = 1; layer < inst->Controller()->layers.size(); ++layer)
+                        if (inst->Controller()->layers[layer].name == "Aim")
+                            LOG_INFO("[playtest] aim layer weight %.3f", inst->LayerWeight(static_cast<int>(layer)));
+                glm::mat4 aimTarget(1.0f);
+                if (m_Animation.BoneModelMatrix(e.id, "ik_hand_gun", aimTarget))
+                    LOG_INFO("[playtest] aim target model (%.4f %.4f %.4f)", aimTarget[3].x, aimTarget[3].y, aimTarget[3].z);
+            }
             if (e.name == "AK Weapon")
                 for (const char* bone : { "magazine", "mag2", "bolt" })
                 {

@@ -664,11 +664,14 @@ void AnimationSystem::Update(Scene& scene, float dt, bool playing)
         {
             // Load every clip the controller uses now, not on the first frame a state plays (avoids hitches).
             for (const AnimLayer& layer : controller->layers)
+            {
+                if (!layer.referenceClip.empty()) m_Clips.Get(layer.referenceClip);
                 for (const AnimState& st : layer.states)
                 {
                     m_Clips.Get(st.clip);
                     for (const BlendChild& ch : st.children) m_Clips.Get(ch.clip);
                 }
+            }
             rt.controllerPath = e.animator.controller;
             rt.controllerVersion = version;
             rt.instance.Reset(*controller);
