@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <regex>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -20,6 +21,154 @@ using EditorUI::Icon;
 
 namespace
 {
+    struct InputActionEntry
+    {
+        std::string name, type, path, processors, part;
+        size_t start = 0, length = 0;
+    };
+
+    std::string JsonStringField(const std::string& object, const char* key)
+    {
+        const std::regex field(std::string("\\\"") + key + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
+        std::smatch match;
+        return std::regex_search(object, match, field) ? match[1].str() : "";
+    }
+
+    std::string EscapeJson(const std::string& value)
+    {
+        std::string result;
+        for (char c : value)
+        {
+            if (c == '"' || c == '\\') result += '\\';
+            result += c;
+        }
+        return result;
+    }
+
+    bool SetJsonStringField(std::string& object, const char* key, const std::string& value)
+    {
+        const std::regex field(std::string("\\\"") + key + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
+        std::smatch match;
+        if (!std::regex_search(object, match, field)) return false;
+        object.replace(static_cast<size_t>(match.position(1)), static_cast<size_t>(match.length(1)), EscapeJson(value));
+        return true;
+    }
+
+    bool SaveInputActionsText(const std::string& path, const std::string& text)
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << text;
+        return static_cast<bool>(out);
+    }
+
+    void DrawInputActionsEditor(const std::string& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::vector<InputActionEntry> actions, bindings;
+        const std::regex leaf(R"(\{[^{}]*\})");
+        for (auto it = std::sregex_iterator(text.begin(), text.end(), leaf); it != std::sregex_iterator(); ++it)
+        {
+            const std::string object = it->str();
+            InputActionEntry entry;
+            entry.start = static_cast<size_t>(it->position());
+            entry.length = static_cast<size_t>(it->length());
+            if (object.find("\"expectedControlType\"") != std::string::npos)
+            {
+                entry.name = JsonStringField(object, "name");
+                entry.type = JsonStringField(object, "expectedControlType");
+                actions.push_back(entry);
+            }
+            else if (object.find("\"path\"") != std::string::npos && object.find("\"action\"") != std::string::npos)
+            {
+                entry.name = JsonStringField(object, "action");
+                entry.path = JsonStringField(object, "path");
+                entry.part = JsonStringField(object, "name");
+                entry.processors = JsonStringField(object, "processors");
+                bindings.push_back(entry);
+            }
+        }
+        static std::string selectedFile, selectedAction;
+        static size_t selectedBinding = static_cast<size_t>(-1);
+        static char pathBuffer[256] = {}, processorsBuffer[256] = {}, newActionBuffer[64] = {};
+        if (selectedFile != path)
+        {
+            selectedFile = path;
+            selectedAction = actions.empty() ? "" : actions.front().name;
+            selectedBinding = static_cast<size_t>(-1);
+        }
+        ImGui::TextDisabled("Edit bindings here. Changes are saved to this .inputactions file.");
+        ImGui::SeparatorText("Actions");
+        for (const auto& action : actions)
+        {
+            if (ImGui::Selectable((action.name + "  (" + action.type + ")").c_str(), selectedAction == action.name))
+            {
+                selectedAction = action.name;
+                selectedBinding = static_cast<size_t>(-1);
+            }
+        }
+        if (actions.empty()) ImGui::TextDisabled("No actions in this asset.");
+        ImGui::InputTextWithHint("##newAction", "New action name", newActionBuffer, sizeof(newActionBuffer));
+        ImGui::SameLine();
+        if (ImGui::Button("Add action") && newActionBuffer[0])
+        {
+            const size_t key = text.find("\"actions\"");
+            const size_t open = key == std::string::npos ? std::string::npos : text.find('[', key);
+            const size_t close = open == std::string::npos ? std::string::npos : text.find(']', open);
+            if (close != std::string::npos)
+            {
+                const bool nonempty = text.find_first_not_of(" \r\n\t", open + 1) < close;
+                std::string updated = text;
+                updated.insert(close, std::string(nonempty ? "," : "") + "\n{\"name\":\"" + EscapeJson(newActionBuffer) +
+                    "\",\"type\":\"Button\",\"expectedControlType\":\"Button\"}");
+                if (SaveInputActionsText(path, updated)) { selectedAction = newActionBuffer; newActionBuffer[0] = 0; }
+            }
+        }
+        if (selectedAction.empty()) return;
+        ImGui::SeparatorText((selectedAction + " bindings").c_str());
+        for (size_t i = 0; i < bindings.size(); ++i)
+        {
+            const auto& binding = bindings[i];
+            if (binding.name != selectedAction) continue;
+            const std::string label = (binding.part.empty() ? "" : binding.part + ": ") + binding.path + "##binding" + std::to_string(i);
+            if (ImGui::Selectable(label.c_str(), selectedBinding == i))
+            {
+                selectedBinding = i;
+                std::snprintf(pathBuffer, sizeof(pathBuffer), "%s", binding.path.c_str());
+                std::snprintf(processorsBuffer, sizeof(processorsBuffer), "%s", binding.processors.c_str());
+            }
+        }
+        if (ImGui::Button("Add binding"))
+        {
+            const size_t key = text.find("\"bindings\"");
+            const size_t open = key == std::string::npos ? std::string::npos : text.find('[', key);
+            const size_t close = open == std::string::npos ? std::string::npos : text.find(']', open);
+            if (close != std::string::npos)
+            {
+                const bool nonempty = text.find_first_not_of(" \r\n\t", open + 1) < close;
+                std::string updated = text;
+                updated.insert(close, std::string(nonempty ? "," : "") + "\n{\"name\":\"\",\"path\":\"<Keyboard>/space\",\"processors\":\"\",\"action\":\"" +
+                    EscapeJson(selectedAction) + "\",\"isComposite\":false,\"isPartOfComposite\":false}");
+                SaveInputActionsText(path, updated);
+            }
+        }
+        if (selectedBinding >= bindings.size() || bindings[selectedBinding].name != selectedAction) return;
+        ImGui::InputText("Control path", pathBuffer, sizeof(pathBuffer));
+        ImGui::InputText("Processors", processorsBuffer, sizeof(processorsBuffer));
+        ImGui::TextDisabled("Examples: <Keyboard>/r, <Mouse>/leftButton, <Mouse>/delta");
+        if (ImGui::Button("Save binding"))
+        {
+            const auto& binding = bindings[selectedBinding];
+            std::string object = text.substr(binding.start, binding.length);
+            if (SetJsonStringField(object, "path", pathBuffer) && SetJsonStringField(object, "processors", processorsBuffer))
+            {
+                std::string updated = text;
+                updated.replace(binding.start, binding.length, object);
+                SaveInputActionsText(path, updated);
+            }
+        }
+    }
+
     bool IsEngineRig(const std::string& path)
     {
         if (fs::path(path).extension() != ".rig") return false;
@@ -587,7 +736,8 @@ void Editor::DrawProject()
         {
             if (it.dir) openFolder = it.path;
             else if (IsScene(it.path)) OpenScene(it.path);
-            else if (IsScript(it.path) || fs::path(it.path).extension() == ".inputactions" || ResourceCache::IsTextureFile(it.path)) Platform::OpenWithDefaultApp(it.path);
+            else if (IsScript(it.path) || ResourceCache::IsTextureFile(it.path)) Platform::OpenWithDefaultApp(it.path);
+            else if (fs::path(it.path).extension() == ".inputactions") { m_SelectedAsset = it.path; m_Selection.clear(); }
             else if (ResourceCache::IsModelFile(it.path)) InstantiateModel(it.path, kNullEntity, nullptr);
             else if (Prefab::IsPrefabFile(it.path)) OpenPrefabMode(it.path);
             else if (AnimatorController::IsControllerFile(it.path)) OpenAnimatorController(it.path);
@@ -1100,6 +1250,10 @@ void Editor::DrawAssetInspector()
         {
             ImGui::TextColored(ImVec4(1, 0.4f, 0.35f, 1), "Could not read this prefab.");
         }
+    }
+    else if (fs::path(path).extension() == ".inputactions")
+    {
+        DrawInputActionsEditor(path);
     }
     else if (IsScript(path))
     {

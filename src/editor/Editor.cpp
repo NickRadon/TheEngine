@@ -1126,8 +1126,16 @@ void Editor::GatherScriptInput()
         std::vector<bool> now(ScriptInput::kKeyCount, false);
         for (int code : m_Playtest.keys)
             if (code >= 0 && code < ScriptInput::kKeyCount) now[code] = true;
-        for (auto [code, at] : m_Playtest.presses)
-            if (code >= 0 && code < ScriptInput::kKeyCount && m_PlayTime >= at && m_PlayTime < at + 0.1f) now[code] = true;
+        for (size_t i = 0; i < m_Playtest.presses.size(); ++i)
+        {
+            const auto [code, at] = m_Playtest.presses[i];
+            if (code >= 0 && code < ScriptInput::kKeyCount && m_PlayTime >= at &&
+                (m_PlayTime < at + 0.1f || !m_Playtest.pressDelivered[i]))
+            {
+                now[code] = true;
+                m_Playtest.pressDelivered[i] = true;
+            }
+        }
         m_Playtest.down.resize(ScriptInput::kKeyCount, false);
         for (int code = 0; code < ScriptInput::kKeyCount; ++code)
         {
@@ -1172,6 +1180,7 @@ void Editor::EnablePlaytest(float seconds, const std::vector<int>& heldKeys, con
                             const std::string& captureDir)
 {
     m_Playtest.presses = pressedKeys;
+    m_Playtest.pressDelivered.assign(pressedKeys.size(), false);
     m_Playtest.enabled = true;
     m_Playtest.seconds = seconds;
     m_Playtest.keys = heldKeys;

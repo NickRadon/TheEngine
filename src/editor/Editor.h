@@ -67,6 +67,7 @@ private:
         float seconds = 0.0f;
         std::vector<int> keys;
         std::vector<std::pair<int, float>> presses;
+        std::vector<bool> pressDelivered; // every timed tap reaches at least one frame, even across capture stalls
         std::vector<bool> down; // keys the playtest held last frame
         std::string captureDir;
         int frames = 0;
