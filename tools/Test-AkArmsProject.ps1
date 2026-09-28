@@ -25,6 +25,10 @@ $cases = @(
     @{ name='walk'; args=@('--hold','W'); arms='Walk'; weapon='Idle' },
     @{ name='sprint'; args=@('--hold','W,LeftShift'); arms='Sprint'; weapon='Idle'; seconds='2.2'; frame='03' },
     @{ name='fire'; args=@('--press','Mouse0@0.25'); arms='Idle'; weapon='Fire' },
+    @{ name='semi-held'; args=@('--hold','Mouse0'); arms='Idle'; weapon='Any'; frame='00' },
+    @{ name='auto-fire'; args=@('--hold','Mouse0,X'); arms='Idle'; weapon='Fire' },
+    @{ name='aim-auto-fire'; args=@('--hold','Mouse0,Mouse1,X'); arms='Idle'; weapon='Fire' },
+    @{ name='toggle-fire-mode'; args=@('--hold','Mouse0','--press','X@0.1,X@0.8'); arms='Idle'; weapon='Any'; seconds='2.2' },
     @{ name='aim'; args=@('--hold','Mouse1'); arms='Idle'; weapon='Idle' },
     @{ name='aim-walk'; args=@('--hold','Mouse1,W'); arms='Walk'; weapon='Idle' },
     @{ name='aim-sprint'; args=@('--hold','Mouse1,W,LeftShift'); arms='Sprint'; weapon='Idle'; seconds='2.2'; frame='03' },
@@ -43,13 +47,32 @@ foreach ($case in $cases) {
     $seconds = if ($case.ContainsKey('seconds')) { $case.seconds } else { '1.2' }
     $arguments = @('--project', $project, '--playtest', $seconds, '--capture-dir', $capture) + @($case.args)
     $lines = @(& $engine @arguments 2>&1)
+    $lines | Set-Content -LiteralPath (Join-Path $capture 'playtest.log')
     if ($LASTEXITCODE -ne 0 -or @($lines | Select-String -Pattern '^\[error\]').Count -gt 0) {
         throw "$($case.name): engine reported an error. $($lines -join [Environment]::NewLine)"
     }
     $arms = @($lines | Select-String -Pattern "\[playtest\].*AK Arms.*state $($case.arms)(?: |$)")
-    $weapon = @($lines | Select-String -Pattern "\[playtest\].*AK Weapon.*state $($case.weapon)(?: |$)")
-    if ($arms.Count -eq 0 -or $weapon.Count -eq 0) {
+    $weaponFound = $case.weapon -eq 'Any' -or
+        @($lines | Select-String -Pattern "\[playtest\].*AK Weapon.*state $($case.weapon)(?: |$)").Count -gt 0
+    if ($arms.Count -eq 0 -or -not $weaponFound) {
         throw "$($case.name): expected arms=$($case.arms), weapon=$($case.weapon) not observed. $($lines -join [Environment]::NewLine)"
+    }
+    if ($case.name -in @('fire','semi-held','auto-fire','aim-auto-fire','toggle-fire-mode')) {
+        $shots = @($lines | Select-String -Pattern '\[ak-fire\] shot ')
+        $minimum = if ($case.name -eq 'toggle-fire-mode') { 2 } elseif ($case.name -like '*auto-fire') { 5 } else { 1 }
+        $maximum = if ($case.name -eq 'toggle-fire-mode') { 10 } elseif ($case.name -like '*auto-fire') { 20 } else { 1 }
+        if ($shots.Count -lt $minimum -or $shots.Count -gt $maximum) {
+            throw "$($case.name): expected $minimum-$maximum shots, observed $($shots.Count)."
+        }
+        if ($case.name -like '*auto-fire' -and -not @($lines | Select-String -Pattern '\[ak-fire\] mode full-auto').Count) {
+            throw "$($case.name): X did not enable full-auto."
+        }
+        if ($case.name -eq 'toggle-fire-mode' -and
+            (-not @($lines | Select-String -Pattern '\[ak-fire\] mode full-auto').Count -or
+             -not @($lines | Select-String -Pattern '\[ak-fire\] mode semi-auto').Count)) {
+            throw 'X did not toggle full-auto back to semi-auto.'
+        }
+        Write-Output "$($case.name): $($shots.Count) firing-animation triggers"
     }
     if ($case.name -like 'aim*') {
         $weights = @($lines | ForEach-Object { if ($_ -match 'aim layer weight ([-\d.]+)') { [double]$Matches[1] } })

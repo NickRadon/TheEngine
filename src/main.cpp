@@ -89,7 +89,7 @@ int main(int argc, char** argv)
             // in seconds (e.g. C@1.5,Space@3) and are tapped for 0.1 s so scripts see GetKeyDown/GetKeyUp.
             static const std::pair<const char*, int> names[] = { { "W", 119 }, { "A", 97 }, { "S", 115 }, { "D", 100 }, { "Q", 113 },
                 { "E", 101 }, { "C", 99 }, { "F", 102 }, { "I", 105 }, { "J", 106 }, { "K", 107 }, { "L", 108 },
-                { "M", 109 }, { "R", 114 }, { "V", 118 }, { "Space", 32 },
+                { "M", 109 }, { "R", 114 }, { "V", 118 }, { "X", 120 }, { "Space", 32 },
                 { "LeftShift", 304 }, { "LeftControl", 306 }, { "Mouse0", 323 }, { "Mouse1", 324 }, { "Mouse2", 325 },
                 { "Mouse3", 326 }, { "Mouse4", 327 } };
             const bool press = arg == "--press";
@@ -198,6 +198,7 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------
     // Choose a project: command line, self-test scratch project, or the launcher (Hub).
     // ------------------------------------------------------------------
+    const fs::path startupDirectory = fs::current_path();
     std::string projectPath = projectArg;
     double lastTime = glfwGetTime();
     if (selfTest)
@@ -286,5 +287,16 @@ int main(int argc, char** argv)
     resources.Shutdown();
     PhysicsWorld::GlobalShutdown();
     shutdownImGui();
+    if (selfTest)
+    {
+        // Self-tests use a scratch project, not a user project. Leave neither a launcher entry
+        // nor a second project folder behind after the run.
+        Project::RemoveRecent(projectPath);
+        std::error_code ec;
+        fs::current_path(startupDirectory, ec);
+        ec.clear();
+        fs::remove_all(projectPath, ec);
+        if (ec) LOG_WARN("Could not remove self-test project %s: %s", projectPath.c_str(), ec.message().c_str());
+    }
     return result;
 }

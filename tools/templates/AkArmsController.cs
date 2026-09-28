@@ -19,6 +19,11 @@ public class AkArmsController : MonoBehaviour
     public bool lockCursorOnPlay = true;
     [Range(0f, 1f)] public float adsMovementScale = 1f;
     [Range(0f, 1f)] public float aimAnimationScale = 0.75f;
+    public bool fullAuto = false;
+    public float roundsPerMinute = 600f;
+    public float recoilPitchPerShot = 1.2f;
+    public float recoilKickPerShot = 0.012f;
+    public float recoilRecoverySpeed = 14f;
 
     InputActionAsset actions;
     Animator arms;
@@ -28,12 +33,21 @@ public class AkArmsController : MonoBehaviour
     int aimLayer = -1;
     int weaponAimLayer = -1;
     Vector3 armsBasePosition;
+    Quaternion armsBaseRotation;
+    float nextShotTime;
+    float recoilPitch;
+    float recoilKick;
+    int shotCount;
 
     void Start()
     {
         arms = armsObject?.GetComponent<Animator>();
         weapon = weaponObject?.GetComponent<Animator>();
-        if (armsObject != null) armsBasePosition = armsObject.transform.localPosition;
+        if (armsObject != null)
+        {
+            armsBasePosition = armsObject.transform.localPosition;
+            armsBaseRotation = armsObject.transform.localRotation;
+        }
         if (aimPointObject == null) Debug.LogError("Assign the AK prefab's AimPoint to AkArmsController.");
         if (arms == null || weapon == null || cameraObject == null)
             Debug.LogError("Assign camera, arms, and weapon to AkArmsController.");
@@ -48,6 +62,8 @@ public class AkArmsController : MonoBehaviour
         if (actions == null) return;
         // Start each frame at the authored hip pose; LateUpdate aligns the animated sight.
         if (armsObject != null) armsObject.transform.localPosition = armsBasePosition;
+        recoilPitch = Mathf.Max(0f, recoilPitch - recoilRecoverySpeed * Time.deltaTime);
+        recoilKick = Mathf.Max(0f, recoilKick - recoilRecoverySpeed * 0.01f * Time.deltaTime);
 
         Vector2 move = actions.ReadVector2("Player/Move");
         float length = Mathf.Sqrt(move.x * move.x + move.y * move.y);
@@ -79,7 +95,15 @@ public class AkArmsController : MonoBehaviour
             if (weaponAimLayer < 0) weaponAimLayer = weapon.GetLayerIndex("Aim");
             if (weaponAimLayer >= 0) weapon.SetLayerWeight(weaponAimLayer, idleOverlay);
         }
-        if (actions.WasPressedThisFrame("Player/Fire")) weapon?.SetTrigger("Fire");
+        if (actions.WasPressedThisFrame("Player/ToggleFireMode"))
+        {
+            fullAuto = !fullAuto;
+            Debug.Log("[ak-fire] mode " + (fullAuto ? "full-auto" : "semi-auto"));
+        }
+        bool firePressed = actions.WasPressedThisFrame("Player/Fire");
+        if ((firePressed || (fullAuto && actions.IsPressed("Player/Fire"))) &&
+            Time.time >= nextShotTime && !ActionPlaying())
+            FireOnce();
         if (actions.WasPressedThisFrame("Player/MagCheck")) TriggerBoth("MagCheck");
         if (actions.WasPressedThisFrame("Player/Inspect")) TriggerBoth("Inspect");
         if (actions.WasPressedThisFrame("Player/Reload")) TriggerBoth("Reload");
@@ -87,11 +111,32 @@ public class AkArmsController : MonoBehaviour
 
     void LateUpdate()
     {
-        if (aimWeight <= 0f || armsObject == null || aimPointObject == null || cameraObject == null) return;
+        if (armsObject == null) return;
+        armsObject.transform.localRotation = armsBaseRotation * Quaternion.Euler(recoilPitch, 0f, 0f);
         // The AimPoint is part of the weapon prefab. After animation and socket placement,
         // translate the camera-mounted rig until that point reaches the camera.
-        Vector3 delta = cameraObject.transform.position - aimPointObject.transform.position;
-        armsObject.transform.position += delta * (aimWeight * Mathf.Clamp01(adsMovementScale));
+        if (aimWeight > 0f && aimPointObject != null && cameraObject != null)
+        {
+            Vector3 delta = cameraObject.transform.position - aimPointObject.transform.position;
+            armsObject.transform.position += delta * (aimWeight * Mathf.Clamp01(adsMovementScale));
+        }
+        armsObject.transform.localPosition += new Vector3(0f, 0f, recoilKick);
+    }
+
+    bool ActionPlaying()
+    {
+        if (weapon == null) return false;
+        string state = weapon.currentStateName;
+        return state == "Reload" || state == "ReloadEmpty" || state == "MagCheck" || state == "Inspect";
+    }
+
+    void FireOnce()
+    {
+        weapon?.SetTrigger("Fire");
+        nextShotTime = Time.time + 60f / Mathf.Max(roundsPerMinute, 1f);
+        recoilPitch = Mathf.Min(recoilPitch + Mathf.Max(recoilPitchPerShot, 0f), 8f);
+        recoilKick = Mathf.Min(recoilKick + Mathf.Max(recoilKickPerShot, 0f), 0.06f);
+        Debug.Log("[ak-fire] shot " + ++shotCount + " mode=" + (fullAuto ? "full-auto" : "semi-auto"));
     }
 
     void TriggerBoth(string name)

@@ -107,7 +107,15 @@ foreach ($state in $weaponStates.GetEnumerator()) {
     $w.Add((State $state.Key "Assets/AK/Animations/Weapon/A_W_AK_$($state.Value).fbx" ($state.Key -eq 'Idle') $row)); $row+=100
 }
 foreach ($action in @('Fire','MagCheck','Inspect','Reload','ReloadEmpty')) {
-    $w.Add((Transition 'Any State' $action $action 'if')); $w.Add((ReturnToIdle $action))
+    if ($action -eq 'Fire') {
+        $w.Add('transition "Any State" "Fire" 0 0 0.03 interrupt none ordered 0')
+        $w.Add('  condition "Fire" if 0')
+        $w.Add('transition "Fire" "Fire" 0 0 0.02 interrupt none ordered 0')
+        $w.Add('  condition "Fire" if 0')
+        $w.Add('transition "Fire" "Idle" 1 0.95 0.04 interrupt none ordered 0')
+    } else {
+        $w.Add((Transition 'Any State' $action $action 'if')); $w.Add((ReturnToIdle $action))
+    }
 }
 $w.Add('default "Idle"'); $w.Add('entry 40 100'); $w.Add('any 40 300')
 $w.Add('layer "Aim" 0 override')
@@ -125,7 +133,7 @@ function AddBinding([string]$action,[string]$path,[string]$part='',[bool]$compos
 AddAction 'Move' 'Value' 'Vector2'; AddBinding 'Move' '2DVector(mode=1)' '' $true
 foreach($item in @(@('up','w'),@('down','s'),@('left','a'),@('right','d'))) { AddBinding 'Move' "<Keyboard>/$($item[1])" $item[0] $false $true }
 AddAction 'Look' 'Value' 'Vector2'; AddBinding 'Look' '<Mouse>/delta' '' $false $false 'scaleVector2(x=3,y=3)'
-foreach($item in @(@('Sprint','<Keyboard>/leftShift'),@('Fire','<Mouse>/leftButton'),@('MagCheck','<Keyboard>/m'),@('Inspect','<Keyboard>/i'),@('Reload','<Keyboard>/r'))) {
+foreach($item in @(@('Sprint','<Keyboard>/leftShift'),@('Fire','<Mouse>/leftButton'),@('ToggleFireMode','<Keyboard>/x'),@('MagCheck','<Keyboard>/m'),@('Inspect','<Keyboard>/i'),@('Reload','<Keyboard>/r'))) {
     AddAction $item[0] 'Button' 'Button'; AddBinding $item[0] $item[1]
 }
 AddAction 'Aim' 'Button' 'Button'; AddBinding 'Aim' '<Mouse>/rightButton'
