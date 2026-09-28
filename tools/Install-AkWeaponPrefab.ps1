@@ -1,0 +1,55 @@
+param([string]$ProjectRoot = 'C:\Users\nickr\Desktop\AnimationFresh')
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$project = (Resolve-Path -LiteralPath $ProjectRoot).Path
+$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$scenes = @(Join-Path $project 'Assets/Scenes/AK_Arms.scene') + @(Join-Path $project 'Assets/Scenes/AK_Grid_Test.scene')
+$rootOverrides = '  prefab "Assets/AK/Prefabs/AK_Weapon.prefab" 1 "object:2" "transform:1" "transform:2" "transform:3" "transform:4" "transform:5" "transform:6" "transform:7" "transform:11" "transform:12" "transform:13"'
+$aimTransform = '  transform 0.005 0.045 0.32 0 0 0 1 1 1 1 0 0 0'
+$aimEntity = 10
+
+foreach ($scenePath in $scenes) {
+    if (-not (Test-Path -LiteralPath $scenePath)) { continue }
+    $scene = Get-Content -LiteralPath $scenePath -Raw
+    if ($scene -notmatch 'entity 5 4 1 "AK Weapon"' -or $scene -notmatch 'entity 6 5 1 "AK Weapon Part"') {
+        throw "Expected AK weapon hierarchy in $scenePath"
+    }
+    if ($scene -notmatch 'field "aimPointObject"') {
+        $scene = $scene.Replace('    field "weaponObject" "GameObject" "entity:5"', "    field `"weaponObject`" `"GameObject`" `"entity:5`"`n    field `"aimPointObject`" `"GameObject`" `"entity:$aimEntity`"")
+    }
+    $scene = [regex]::Replace($scene, '(?m)^    field "aimPointObject" "GameObject" "entity:\d+"', "    field `"aimPointObject`" `"GameObject`" `"entity:$aimEntity`"")
+    $scene = [regex]::Replace($scene, '(?m)^  prefab "Assets/AK/Prefabs/AK_Weapon.prefab"[^\r\n]*\r?\n', '')
+    $scene = [regex]::Replace($scene, '(?m)^  prefab "" [23]\r?\n', '')
+    $scene = [regex]::Replace($scene, '(?ms)^entity \d+ 5 1 "AimPoint"\r?\n.*?(?=^entity |\z)', '')
+    $scene = [regex]::Replace($scene, '(?m)^(entity 5 4 1 "AK Weapon"\r?\n(?:^(?!entity )[\s\S]*?))(?=^entity 6 5 1)', { param($m) $m.Groups[1].Value.TrimEnd("`r", "`n") + "`n$rootOverrides`n" })
+    $scene = [regex]::Replace($scene, '(?m)^(entity 6 5 1 "AK Weapon Part"\r?\n(?:^(?!entity )[\s\S]*?))(?=^entity )', { param($m) $m.Groups[1].Value.TrimEnd("`r", "`n") + "`n  prefab `"`" 2`nentity $aimEntity 5 1 `"AimPoint`"`n$aimTransform`n  prefab `"`" 3`n" })
+    $scene = [regex]::Replace($scene, '(?m)^    field "aimRigOffset[XYZ]"[^\r\n]*\r?\n', '')
+    Set-Content -LiteralPath $scenePath -Value $scene
+}
+
+$prefabDir = Join-Path $project 'Assets/AK/Prefabs'
+New-Item -ItemType Directory -Force -Path $prefabDir | Out-Null
+$prefab = @'
+TheEnginePrefab 1
+entity 1 0 1 "AK Weapon"
+  transform 0 0 0 0 0 0 1 1 1 1 0 0 0
+  mesh 1 "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx#0" 1 1 1 0 0.5 "Assets/AK/Weapon.mat" 1
+  animator 1 "Assets/Animators/AK_Weapon.controller" 0 "" 0 "" 1
+  socket 1 "vb_ak_weapon" 0 0 0 0 0 0 1
+entity 2 1 1 "AK Weapon Part"
+  transform 0 0 0 0 0 0 1 1 1 1 0 0 0
+  mesh 1 "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx#1" 1 1 1 0 0.5 "Assets/AK/Weapon.mat" 1
+entity 3 1 1 "AimPoint"
+  transform 0.005 0.045 0.32 0 0 0 1 1 1 1 0 0 0
+'@
+Set-Content -LiteralPath (Join-Path $prefabDir 'AK_Weapon.prefab') -Value $prefab
+
+$controllerPath = Join-Path $project 'Assets/Animators/AK_Arms.controller'
+if (Test-Path -LiteralPath $controllerPath) {
+    $controller = Get-Content -LiteralPath $controllerPath -Raw
+    $controller = [regex]::Replace($controller, '(?m)^\s*poseoffset "ik_hand_(?:gun|l|r)"[^\r\n]*\r?\n', '')
+    Set-Content -LiteralPath $controllerPath -Value $controller
+}
+Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AkArmsController.cs') -Destination (Join-Path $project 'Assets/Scripts/AkArmsController.cs') -Force
+Write-Output "Installed AK weapon prefab and camera-aligned AimPoint in $project"

@@ -95,9 +95,6 @@ $a.Add('default "Idle"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
 $a.Add('layer "Aim" 0 additive "ik_hand_gun" "ik_hand_l" "ik_hand_r"')
 $a.Add('reference "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx"')
 $a.Add('state "Aim" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 0 1 320 100')
-foreach ($bone in @('ik_hand_gun','ik_hand_l','ik_hand_r')) {
-    $a.Add("  poseoffset `"$bone`" -0.02 0.015 0 0 0 0 1")
-}
 $a.Add('default "Aim"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
 Set-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Arms.controller') -Value $a
 
@@ -143,6 +140,7 @@ entity 3 0 1 "Player"
     field "cameraObject" "GameObject" "entity:1"
     field "armsObject" "GameObject" "entity:4"
     field "weaponObject" "GameObject" "entity:5"
+    field "aimPointObject" "GameObject" "entity:10"
 entity 1 3 1 "Main Camera"
   transform 0 1.65 0 0 0 0 1 1 1 1 0 0 0
   camera 1 90 0.03 1000 0 5
@@ -155,14 +153,20 @@ entity 5 4 1 "AK Weapon"
   mesh 1 "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx#0" 1 1 1 0 0.5 "Assets/AK/Weapon.mat" 1
   animator 1 "Assets/Animators/AK_Weapon.controller" 0 "" 0 "" 1
   socket 1 "vb_ak_weapon" 0 0 0 0 0 0 1
+  prefab "Assets/AK/Prefabs/AK_Weapon.prefab" 1 "object:2" "transform:1" "transform:2" "transform:3" "transform:4" "transform:5" "transform:6" "transform:7" "transform:11" "transform:12" "transform:13"
 entity 6 5 1 "AK Weapon Part"
   transform 0 0 0 0 0 0 1 1 1 1 0 0 0
   mesh 1 "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx#1" 1 1 1 0 0.5 "Assets/AK/Weapon.mat" 1
+  prefab "" 2
+entity 10 5 1 "AimPoint"
+  transform 0.005 0.045 0.32 0 0 0 1 1 1 1 0 0 0
+  prefab "" 3
 entity 2 0 1 "Directional Light"
   transform 0 3 0 -0.408218 -0.23457 -0.109382 0.875426 1 1 1 -50 -30 0
   light 1 1 0.957 0.839 1 1 1 0 10 30 21.8
 '@
 Set-Content -LiteralPath (Join-Path $project 'Assets/Scenes/AK_Arms.scene') -Value $scene
+& (Join-Path $repo 'tools/Install-AkWeaponPrefab.ps1') -ProjectRoot $project
 $settings=Join-Path $project 'ProjectSettings/ProjectSettings.txt'
 $text=Get-Content -LiteralPath $settings -Raw
 $text=[regex]::Replace($text,'(?m)^lastScene ".*"','lastScene "Assets/Scenes/AK_Arms.scene"')

@@ -7,6 +7,7 @@ public class AkArmsController : MonoBehaviour
     public GameObject cameraObject;
     public GameObject armsObject;
     public GameObject weaponObject;
+    public GameObject aimPointObject;
     public string inputActions = "Assets/Input/AK_Controls.inputactions";
     public float walkSpeed = 2.5f;
     public float sprintSpeed = 4.5f;
@@ -15,9 +16,6 @@ public class AkArmsController : MonoBehaviour
     public bool invertVertical = false;
     public float maxPitch = 89f;
     public float aimBlendSpeed = 10f;
-    public float aimRigOffsetX = -0.04f;
-    public float aimRigOffsetY = 0.04f;
-    public float aimRigOffsetZ = -0.08f;
 
     InputActionAsset actions;
     Animator arms;
@@ -32,6 +30,7 @@ public class AkArmsController : MonoBehaviour
         arms = armsObject?.GetComponent<Animator>();
         weapon = weaponObject?.GetComponent<Animator>();
         if (armsObject != null) armsBasePosition = armsObject.transform.localPosition;
+        if (aimPointObject == null) Debug.LogError("Assign the AK prefab's AimPoint to AkArmsController.");
         if (arms == null || weapon == null || cameraObject == null)
             Debug.LogError("Assign camera, arms, and weapon to AkArmsController.");
         try { actions = InputActionAsset.Load(inputActions); }
@@ -43,6 +42,8 @@ public class AkArmsController : MonoBehaviour
     void Update()
     {
         if (actions == null) return;
+        // Start each frame at the authored hip pose; LateUpdate aligns the animated sight.
+        if (armsObject != null) armsObject.transform.localPosition = armsBasePosition;
 
         Vector2 move = actions.ReadVector2("Player/Move");
         float length = Mathf.Sqrt(move.x * move.x + move.y * move.y);
@@ -67,16 +68,20 @@ public class AkArmsController : MonoBehaviour
             float target = actions.IsPressed("Player/Aim") ? 1f : 0f;
             aimWeight += (target - aimWeight) * Mathf.Clamp(Time.deltaTime * aimBlendSpeed, 0f, 1f);
             if (aimLayer >= 0) arms.SetLayerWeight(aimLayer, aimWeight);
-            if (armsObject != null)
-                armsObject.transform.localPosition = new Vector3(
-                    armsBasePosition.x + aimRigOffsetX * aimWeight,
-                    armsBasePosition.y + aimRigOffsetY * aimWeight,
-                    armsBasePosition.z + aimRigOffsetZ * aimWeight);
         }
         if (actions.WasPressedThisFrame("Player/Fire")) weapon?.SetTrigger("Fire");
         if (actions.WasPressedThisFrame("Player/MagCheck")) TriggerBoth("MagCheck");
         if (actions.WasPressedThisFrame("Player/Inspect")) TriggerBoth("Inspect");
         if (actions.WasPressedThisFrame("Player/Reload")) TriggerBoth("Reload");
+    }
+
+    void LateUpdate()
+    {
+        if (aimWeight <= 0f || armsObject == null || aimPointObject == null || cameraObject == null) return;
+        // The AimPoint is part of the weapon prefab. After animation and socket placement,
+        // translate the camera-mounted rig until that point reaches the camera.
+        Vector3 delta = cameraObject.transform.position - aimPointObject.transform.position;
+        armsObject.transform.position += delta * aimWeight;
     }
 
     void TriggerBoth(string name)

@@ -17,9 +17,6 @@ if ($controller -notmatch '(?m)^layer "Aim"') {
 layer "Aim" 0 additive "ik_hand_gun" "ik_hand_l" "ik_hand_r"
 reference "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx"
 state "Aim" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 0 1 320 100
-  poseoffset "ik_hand_gun" -0.02 0.015 0 0 0 0 1
-  poseoffset "ik_hand_l" -0.02 0.015 0 0 0 0 1
-  poseoffset "ik_hand_r" -0.02 0.015 0 0 0 0 1
 default "Aim"
 entry 40 100
 any 40 300
@@ -34,5 +31,5 @@ if (-not @($player.actions | Where-Object name -eq 'Aim').Count) {
     $player.bindings += [pscustomobject]@{ name=''; path='<Mouse>/rightButton'; processors=''; action='Aim'; isComposite=$false; isPartOfComposite=$false }
     $actions | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $actionsPath
 }
-Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AkArmsController.cs') -Destination (Join-Path $project 'Assets/Scripts/AkArmsController.cs') -Force
-Write-Output "Enabled additive AK aim layer and right-mouse input in $project"
+& (Join-Path $repo 'tools/Install-AkWeaponPrefab.ps1') -ProjectRoot $project
+Write-Output "Enabled camera-aligned AK AimPoint and right-mouse input in $project"
