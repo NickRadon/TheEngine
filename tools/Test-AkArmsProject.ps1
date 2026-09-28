@@ -49,5 +49,10 @@ foreach ($case in $cases) {
     $image = [System.Drawing.Image]::FromFile($source)
     try { $image.Save((Join-Path $ReviewDir "$($case.name).png"), [System.Drawing.Imaging.ImageFormat]::Png) }
     finally { $image.Dispose() }
+    $externalSource = Join-Path $capture "scene_play_$frame.bmp"
+    if (-not (Test-Path -LiteralPath $externalSource)) { throw "$($case.name): external screenshot is missing." }
+    $external = [System.Drawing.Image]::FromFile($externalSource)
+    try { $external.Save((Join-Path $ReviewDir "$($case.name)-external.png"), [System.Drawing.Imaging.ImageFormat]::Png) }
+    finally { $external.Dispose() }
     Write-Output "$($case.name): arms=$($case.arms), weapon=$($case.weapon), capture=$($case.name).png"
 }

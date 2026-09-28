@@ -1,0 +1,12 @@
+TheEngineRig 2
+# AE Master AK first-person arms. Use on the AK idle-pose mesh, not a full-body rig.
+# The authored left clavicle is kept: the full-body clavicle roll pulled this elbow inward.
+bone "vb_ak_weapon" "head" 0 0 0 0 0 0 1
+bone "vb_ak_hand_l" "vb_ak_weapon" 0 0 0 0 0 0 1
+bone "vb_ak_hand_r" "vb_ak_weapon" 0 0 0 0 0 0 1
+precopy "vb_ak_weapon" "ik_hand_gun" 1 1 1 1
+prerotate "vb_ak_weapon" "vb_ak_weapon" 0 0.7071068 0.7071068 0
+precopy "vb_ak_hand_l" "ik_hand_l" 1 1 1 1
+precopy "vb_ak_hand_r" "ik_hand_r" 1 1 1 1
+twobone "hand_l" "vb_ak_hand_l" "" 1
+twobone "hand_r" "vb_ak_hand_r" "" 1
