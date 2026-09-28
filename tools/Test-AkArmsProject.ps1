@@ -53,8 +53,8 @@ foreach ($case in $cases) {
     }
     if ($case.name -like 'aim*') {
         $weights = @($lines | ForEach-Object { if ($_ -match 'aim layer weight ([-\d.]+)') { [double]$Matches[1] } })
-        if ($weights.Count -eq 0 -or ($weights | Measure-Object -Maximum).Maximum -lt 0.8) {
-            throw "$($case.name): aim layer did not reach weight 0.8."
+        if ($weights.Count -eq 0 -or ($weights | Measure-Object -Maximum).Maximum -lt 0.2) {
+            throw "$($case.name): aimed animation damping layer did not reach weight 0.2."
         }
         Write-Output "$($case.name): aim layer max weight $([Math]::Round(($weights | Measure-Object -Maximum).Maximum, 3))"
     }

@@ -48,8 +48,32 @@ Set-Content -LiteralPath (Join-Path $prefabDir 'AK_Weapon.prefab') -Value $prefa
 $controllerPath = Join-Path $project 'Assets/Animators/AK_Arms.controller'
 if (Test-Path -LiteralPath $controllerPath) {
     $controller = Get-Content -LiteralPath $controllerPath -Raw
-    $controller = [regex]::Replace($controller, '(?m)^\s*poseoffset "ik_hand_(?:gun|l|r)"[^\r\n]*\r?\n', '')
+    $aimLayer = @'
+layer "Aim" 0 override
+state "Aim" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 0 1 320 100
+default "Aim"
+entry 40 100
+any 40 300
+'@
+    if ($controller -match '(?m)^layer "Aim"') {
+        $controller = [regex]::Replace($controller, '(?ms)^layer "Aim".*\z', $aimLayer + "`n")
+    } else { $controller = $controller.TrimEnd() + "`n" + $aimLayer + "`n" }
     Set-Content -LiteralPath $controllerPath -Value $controller
+}
+$weaponControllerPath = Join-Path $project 'Assets/Animators/AK_Weapon.controller'
+if (Test-Path -LiteralPath $weaponControllerPath) {
+    $controller = Get-Content -LiteralPath $weaponControllerPath -Raw
+    $aimLayer = @'
+layer "Aim" 0 override
+state "Aim" clip "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx" "" "" 0 1 320 100
+default "Aim"
+entry 40 100
+any 40 300
+'@
+    if ($controller -match '(?m)^layer "Aim"') {
+        $controller = [regex]::Replace($controller, '(?ms)^layer "Aim".*\z', $aimLayer + "`n")
+    } else { $controller = $controller.TrimEnd() + "`n" + $aimLayer + "`n" }
+    Set-Content -LiteralPath $weaponControllerPath -Value $controller
 }
 Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AkArmsController.cs') -Destination (Join-Path $project 'Assets/Scripts/AkArmsController.cs') -Force
 Write-Output "Installed AK weapon prefab and camera-aligned AimPoint in $project"

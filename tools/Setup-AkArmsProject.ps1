@@ -92,8 +92,7 @@ foreach ($action in @('MagCheck','Inspect','Reload','ReloadEmpty','Draw','Holste
     $a.Add((Transition 'Any State' $action $action 'if')); $a.Add((ReturnToIdle $action))
 }
 $a.Add('default "Idle"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
-$a.Add('layer "Aim" 0 additive "ik_hand_gun" "ik_hand_l" "ik_hand_r"')
-$a.Add('reference "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx"')
+$a.Add('layer "Aim" 0 override')
 $a.Add('state "Aim" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 0 1 320 100')
 $a.Add('default "Aim"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
 Set-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Arms.controller') -Value $a
@@ -111,6 +110,9 @@ foreach ($action in @('Fire','MagCheck','Inspect','Reload','ReloadEmpty')) {
     $w.Add((Transition 'Any State' $action $action 'if')); $w.Add((ReturnToIdle $action))
 }
 $w.Add('default "Idle"'); $w.Add('entry 40 100'); $w.Add('any 40 300')
+$w.Add('layer "Aim" 0 override')
+$w.Add('state "Aim" clip "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx" "" "" 0 1 320 100')
+$w.Add('default "Aim"'); $w.Add('entry 40 100'); $w.Add('any 40 300')
 Set-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Weapon.controller') -Value $w
 
 $map=[ordered]@{name='Player';actions=@();bindings=@()}

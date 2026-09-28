@@ -16,6 +16,8 @@ public class AkArmsController : MonoBehaviour
     public bool invertVertical = false;
     public float maxPitch = 89f;
     public float aimBlendSpeed = 10f;
+    [Range(0f, 1f)] public float adsMovementScale = 1f;
+    [Range(0f, 1f)] public float aimAnimationScale = 0.75f;
 
     InputActionAsset actions;
     Animator arms;
@@ -23,6 +25,7 @@ public class AkArmsController : MonoBehaviour
     float pitch;
     float aimWeight;
     int aimLayer = -1;
+    int weaponAimLayer = -1;
     Vector3 armsBasePosition;
 
     void Start()
@@ -60,14 +63,20 @@ public class AkArmsController : MonoBehaviour
         pitch = Mathf.Clamp(pitch + vertical, -maxPitch, maxPitch);
         if (cameraObject != null) cameraObject.transform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
 
+        float targetAim = actions.IsPressed("Player/Aim") ? 1f : 0f;
+        aimWeight += (targetAim - aimWeight) * Mathf.Clamp(Time.deltaTime * aimBlendSpeed, 0f, 1f);
+        float idleOverlay = aimWeight * (1f - Mathf.Clamp01(aimAnimationScale));
         if (arms != null)
         {
             arms.SetBool("Moving", moving);
             arms.SetBool("Sprinting", sprinting);
             if (aimLayer < 0) aimLayer = arms.GetLayerIndex("Aim");
-            float target = actions.IsPressed("Player/Aim") ? 1f : 0f;
-            aimWeight += (target - aimWeight) * Mathf.Clamp(Time.deltaTime * aimBlendSpeed, 0f, 1f);
-            if (aimLayer >= 0) arms.SetLayerWeight(aimLayer, aimWeight);
+            if (aimLayer >= 0) arms.SetLayerWeight(aimLayer, idleOverlay);
+        }
+        if (weapon != null)
+        {
+            if (weaponAimLayer < 0) weaponAimLayer = weapon.GetLayerIndex("Aim");
+            if (weaponAimLayer >= 0) weapon.SetLayerWeight(weaponAimLayer, idleOverlay);
         }
         if (actions.WasPressedThisFrame("Player/Fire")) weapon?.SetTrigger("Fire");
         if (actions.WasPressedThisFrame("Player/MagCheck")) TriggerBoth("MagCheck");
@@ -81,7 +90,7 @@ public class AkArmsController : MonoBehaviour
         // The AimPoint is part of the weapon prefab. After animation and socket placement,
         // translate the camera-mounted rig until that point reaches the camera.
         Vector3 delta = cameraObject.transform.position - aimPointObject.transform.position;
-        armsObject.transform.position += delta * aimWeight;
+        armsObject.transform.position += delta * (aimWeight * Mathf.Clamp01(adsMovementScale));
     }
 
     void TriggerBoth(string name)

@@ -14,8 +14,7 @@ $controller = Get-Content -LiteralPath $controllerPath -Raw
 $controller = [regex]::Replace($controller, '^TheEngineAnimator \d+', 'TheEngineAnimator 5')
 if ($controller -notmatch '(?m)^layer "Aim"') {
     $controller += @'
-layer "Aim" 0 additive "ik_hand_gun" "ik_hand_l" "ik_hand_r"
-reference "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx"
+layer "Aim" 0 override
 state "Aim" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 0 1 320 100
 default "Aim"
 entry 40 100
