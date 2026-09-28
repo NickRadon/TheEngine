@@ -1254,6 +1254,17 @@ void Editor::RunPlaytest()
             }
             LOG_INFO("[playtest] t=%.2f %s pos (%.3f %.3f %.3f) yaw %.1f state %s fps %.0f", m_PlayTime, e.name.c_str(), pos.x, pos.y, pos.z,
                      e.transform.euler.y, state.c_str(), m_Fps);
+            if (e.name == "AK Weapon")
+                for (const char* bone : { "magazine", "mag2", "bolt" })
+                {
+                    glm::mat4 boneModel(1.0f);
+                    if (m_Animation.BoneModelMatrix(e.id, bone, boneModel))
+                    {
+                        const glm::vec3 p(boneModel[3]), z(boneModel[2]);
+                        LOG_INFO("[playtest] weapon %s local (%.4f %.4f %.4f) Z(%.4f %.4f %.4f)",
+                                 bone, p.x, p.y, p.z, z.x, z.y, z.z);
+                    }
+                }
             glm::mat4 headBone(1.0f);
             if (m_Animation.BoneModelMatrix(e.id, "head", headBone))
             {

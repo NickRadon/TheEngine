@@ -43,6 +43,22 @@ foreach ($case in $cases) {
     if ($arms.Count -eq 0 -or $weapon.Count -eq 0) {
         throw "$($case.name): expected arms=$($case.arms), weapon=$($case.weapon) not observed. $($lines -join [Environment]::NewLine)"
     }
+    if ($case.name -eq 'reload') {
+        $magPositions = @($lines | ForEach-Object {
+            if ($_ -match 'weapon mag2 local \(([-\d.]+) ([-\d.]+) ([-\d.]+)\)') {
+                [double[]]@([double]$Matches[1], [double]$Matches[2], [double]$Matches[3])
+            }
+        })
+        $magMotion = 0.0
+        for ($i = 0; $i + 5 -lt $magPositions.Count; $i += 3) {
+            $distance = [Math]::Sqrt([Math]::Pow($magPositions[$i] - $magPositions[$i + 3], 2) +
+                [Math]::Pow($magPositions[$i + 1] - $magPositions[$i + 4], 2) +
+                [Math]::Pow($magPositions[$i + 2] - $magPositions[$i + 5], 2))
+            $magMotion = [Math]::Max($magMotion, $distance)
+        }
+        if ($magMotion -lt 0.1) { throw "reload: weapon magazine pose did not move (maximum sampled delta $magMotion m)." }
+        Write-Output "reload: weapon magazine pose delta $([Math]::Round($magMotion, 3)) m"
+    }
     $frame = if ($case.ContainsKey('frame')) { $case.frame } else { '01' }
     $source = Join-Path $capture "play_$frame.bmp"
     if (-not (Test-Path -LiteralPath $source)) { throw "$($case.name): screenshot is missing." }

@@ -291,7 +291,7 @@ private:
     // Game view state
     bool m_GameViewVisible = false;
     ImVec2 m_GameViewSize{ 1, 1 };
-    int m_GameAspect = 0; // 0 free, 1 16:9, 2 16:10, 3 4:3, 4 1:1
+    int m_GameAspect = 1; // 0 free, 1 16:9, 2 16:10, 3 4:3, 4 1:1
     bool m_ShowStats = false;
     bool m_MaximizeOnPlay = false;
 

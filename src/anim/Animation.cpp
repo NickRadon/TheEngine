@@ -76,9 +76,12 @@ ClipBinding BindClip(const AnimationClip& clip, const Skeleton& skeleton)
     {
         auto it = clip.trackIndex.find(skeleton.names[i]);
         if (it != clip.trackIndex.end()) b.trackForBone[i] = it->second;
-        // Unreal-style IK and marker bones are targets in space, not bones with lengths: keep their translation.
+        // Mechanical rigs have no hips to retarget and depend on local translation for moving parts
+        // (for example an AK magazine and bolt). Keep their authored motion. Character rigs retain
+        // their target bone lengths except for IK and marker bones.
         const std::string& n = skeleton.names[i];
-        if (n.rfind("ik_", 0) == 0 || n == "camera_bone" || n == "interaction" || n == "center_of_mass") b.animatedTranslation[i] = 1;
+        if (skeleton.pelvis < 0 || n.rfind("ik_", 0) == 0 || n == "camera_bone" || n == "interaction" || n == "center_of_mass")
+            b.animatedTranslation[i] = 1;
     }
     // Rigs with different proportions: scale the hip translation by the hip height ratio.
     if (skeleton.pelvis >= 0 && b.trackForBone[skeleton.pelvis] >= 0)
@@ -108,8 +111,8 @@ void SampleClip(const AnimationClip& clip, const ClipBinding& binding, const Ske
         }
         const BoneTransform sampled = clip.SampleTrack(track, time);
         BoneTransform& x = out[i];
-        // Retarget: rotations come from the clip; translations only for the root and hips (the rest keep the
-        // target's bone lengths), like Unreal's skeleton-based retargeting.
+        // Character retargeting preserves target limb lengths; mechanical rigs and marker bones
+        // use the clip's local translations so their moving parts remain animated.
         x.r = sampled.r;
         x.s = skeleton.rest[i].s;
         const bool isRoot = static_cast<int>(i) == skeleton.root;
