@@ -33,4 +33,20 @@ $controller = [regex]::Replace($controller, '(?m)^(transition "Fire" "Idle" 1 0.
 Set-Content -LiteralPath $weaponControllerPath -Value $controller
 
 Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AkArmsController.cs') -Destination (Join-Path $project 'Assets/Scripts/AkArmsController.cs') -Force
-Write-Output "Installed X fire-mode toggle, repeatable authored Fire animation, and arms recoil in $project"
+Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AkGunPivot.cs') -Destination (Join-Path $project 'Assets/Scripts/AkGunPivot.cs') -Force
+foreach ($name in @('AK_Arms.scene', 'AK_Grid_Test.scene')) {
+    $scenePath = Join-Path $project "Assets/Scenes/$name"
+    if (-not (Test-Path -LiteralPath $scenePath)) { continue }
+    $scene = Get-Content -LiteralPath $scenePath -Raw
+    $pattern = '(?s)(entity 4 1 1 "AK Arms"\r?\n.*?)(?=entity \d+ \d+ \d+ ")'
+    $scene = [regex]::Replace($scene, $pattern, {
+        param($match)
+        $block = $match.Value
+        if ($block -notmatch 'script 1 "AkGunPivot"') {
+            $block += "  script 1 `"AkGunPivot`"`n"
+        }
+        return $block
+    })
+    Set-Content -LiteralPath $scenePath -Value $scene
+}
+Write-Output "Installed X fire-mode toggle and ik_hand_gun-pivot recoil in $project"

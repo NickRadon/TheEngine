@@ -27,6 +27,7 @@ foreach ($name in $weaponClips) {
     $file = "A_W_AK_$name.fbx"; Copy-Item -LiteralPath (Join-Path $weapon $file) -Destination (Join-Path $weaponDest $file) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AkArmsController.cs') -Destination (Join-Path $project 'Assets/Scripts/AkArmsController.cs') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AkGunPivot.cs') -Destination (Join-Path $project 'Assets/Scripts/AkGunPivot.cs') -Force
 Copy-Item -LiteralPath (Join-Path $repo 'tools/templates/AE_AK_Arms.rig') -Destination (Join-Path $project 'Assets/AK/Rigs/AE_AK.rig') -Force
 $textureDir=Join-Path $project 'Assets/AK/Textures'
 New-Item -ItemType Directory -Force -Path $textureDir | Out-Null
@@ -158,6 +159,7 @@ entity 4 1 1 "AK Arms"
   transform -0.00316192 -1.57135 0.204972 0 0 0 1 1 1 1 0 0 0
   mesh 1 "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx#0" 1 1 1 0 0.5 "Assets/AK/Arms.mat" 1
   animator 1 "Assets/Animators/AK_Arms.controller" 0 "" 0 "Assets/AK/Rigs/AE_AK.rig" 1
+  script 1 "AkGunPivot"
 entity 5 4 1 "AK Weapon"
   transform 0 0 0 0 0 0 1 1 1 1 0 0 0
   mesh 1 "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx#0" 1 1 1 0 0.5 "Assets/AK/Weapon.mat" 1

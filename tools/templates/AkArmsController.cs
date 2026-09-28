@@ -28,12 +28,15 @@ public class AkArmsController : MonoBehaviour
     InputActionAsset actions;
     Animator arms;
     Animator weapon;
+    AkGunPivot gunPivot;
     float pitch;
     float aimWeight;
     int aimLayer = -1;
     int weaponAimLayer = -1;
     Vector3 armsBasePosition;
     Quaternion armsBaseRotation;
+    Vector3 adsOffsetInCameraSpace;
+    bool hasAdsOffset;
     float nextShotTime;
     float recoilPitch;
     float recoilKick;
@@ -43,6 +46,7 @@ public class AkArmsController : MonoBehaviour
     {
         arms = armsObject?.GetComponent<Animator>();
         weapon = weaponObject?.GetComponent<Animator>();
+        gunPivot = armsObject?.GetComponent<AkGunPivot>();
         if (armsObject != null)
         {
             armsBasePosition = armsObject.transform.localPosition;
@@ -61,7 +65,11 @@ public class AkArmsController : MonoBehaviour
     {
         if (actions == null) return;
         // Start each frame at the authored hip pose; LateUpdate aligns the animated sight.
-        if (armsObject != null) armsObject.transform.localPosition = armsBasePosition;
+        if (armsObject != null)
+        {
+            armsObject.transform.localPosition = armsBasePosition;
+            armsObject.transform.localRotation = armsBaseRotation;
+        }
         recoilPitch = Mathf.Max(0f, recoilPitch - recoilRecoverySpeed * Time.deltaTime);
         recoilKick = Mathf.Max(0f, recoilKick - recoilRecoverySpeed * 0.01f * Time.deltaTime);
 
@@ -107,20 +115,25 @@ public class AkArmsController : MonoBehaviour
         if (actions.WasPressedThisFrame("Player/MagCheck")) TriggerBoth("MagCheck");
         if (actions.WasPressedThisFrame("Player/Inspect")) TriggerBoth("Inspect");
         if (actions.WasPressedThisFrame("Player/Reload")) TriggerBoth("Reload");
+        gunPivot?.SetRecoil(recoilPitch, recoilKick);
     }
 
     void LateUpdate()
     {
         if (armsObject == null) return;
-        armsObject.transform.localRotation = armsBaseRotation * Quaternion.Euler(recoilPitch, 0f, 0f);
-        // The AimPoint is part of the weapon prefab. After animation and socket placement,
-        // translate the camera-mounted rig until that point reaches the camera.
-        if (aimWeight > 0f && aimPointObject != null && cameraObject != null)
+        // Calibrate from the authored idle sight. Keep this offset fixed while aiming so
+        // weapon/reload animation does not make the whole rig orbit around the camera.
+        if (aimPointObject != null && cameraObject != null)
         {
-            Vector3 delta = cameraObject.transform.position - aimPointObject.transform.position;
-            armsObject.transform.position += delta * (aimWeight * Mathf.Clamp01(adsMovementScale));
+            if (!hasAdsOffset || (aimWeight < 0.01f && !ActionPlaying() && recoilPitch < 0.01f))
+            {
+                Vector3 delta = cameraObject.transform.position - aimPointObject.transform.position;
+                adsOffsetInCameraSpace = Quaternion.Inverse(cameraObject.transform.rotation) * delta;
+                hasAdsOffset = true;
+            }
+            armsObject.transform.position += cameraObject.transform.rotation * adsOffsetInCameraSpace *
+                                             (aimWeight * Mathf.Clamp01(adsMovementScale));
         }
-        armsObject.transform.localPosition += new Vector3(0f, 0f, recoilKick);
     }
 
     bool ActionPlaying()
