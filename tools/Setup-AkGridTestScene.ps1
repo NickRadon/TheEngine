@@ -47,20 +47,23 @@ emission 0 0 0
 "@ | Set-Content -LiteralPath $path
 }
 Write-GridMaterial (Join-Path $materialDir 'Grid.mat') 1
-Write-GridMaterial (Join-Path $materialDir 'GridFloor.mat') 12
+# Each texture tile covers one world meter: cubes have 1 m faces; the built-in plane
+# is 10 m wide, so scaling it by 4 gives 40 m and requires 40 UV repeats.
+Write-GridMaterial (Join-Path $materialDir 'GridLarge.mat') 2
+Write-GridMaterial (Join-Path $materialDir 'GridFloor.mat') 40
 
 $scene = Get-Content -LiteralPath $source -Raw
 $scene = $scene.Replace('name "AK_Arms"', 'name "AK_Grid_Test"')
 $scene += @'
 entity 7 0 1 "Grid Floor"
-  transform 0 -0.05 0 0 0 0 1 20 1 20 0 0 0
+  transform 0 -0.05 0 0 0 0 1 4 1 4 0 0 0
   mesh 1 "Plane" 1 1 1 0 0.5 "Assets/Materials/GridFloor.mat" 1
 entity 8 0 1 "Grid Cube Left"
   transform -2 0.5 -8 0 0 0 1 1 1 1 0 0 0
   mesh 1 "Cube" 1 1 1 0 0.5 "Assets/Materials/Grid.mat" 1
 entity 9 0 1 "Grid Cube Right"
-  transform 2 0.5 -8 0 0 0 1 1 1 1 0 0 0
-  mesh 1 "Cube" 1 1 1 0 0.5 "Assets/Materials/Grid.mat" 1
+  transform 2 1 -8 0 0 0 1 2 2 2 0 0 0
+  mesh 1 "Cube" 1 1 1 0 0.5 "Assets/Materials/GridLarge.mat" 1
 '@
 $destination = Join-Path $project 'Assets/Scenes/AK_Grid_Test.scene'
 Set-Content -LiteralPath $destination -Value $scene
