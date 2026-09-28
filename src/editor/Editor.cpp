@@ -1041,6 +1041,7 @@ void Editor::EnterPlayMode()
     m_PlayTime = 0.0f;
     m_PlayFrame = 0;
     m_FocusGameView = true;
+    m_CursorReleased = false;
     LOG_INFO("Entered play mode");
     // Physics first, so Awake/Start can already use rigidbodies.
     m_Physics.Begin(&m_Scene, [this](const std::string& ref) -> const MeshData* {
@@ -1161,10 +1162,19 @@ void Editor::GatherScriptInput()
 // Escape releases it until the Game view is clicked again, like Unity's editor.
 void Editor::UpdateCursor()
 {
-    const bool wantLock = m_Playing && m_Scripts->cursorLock != 0 && m_GameViewFocused && !m_CursorReleased;
     if (m_Playing && m_CursorLockedByScript && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) m_CursorReleased = true;
-    if (m_CursorReleased && m_GameViewFocused && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) m_CursorReleased = false;
+    else if (m_CursorReleased && m_Playing && m_GameViewVisible &&
+             (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
+    {
+        // Game window focus is updated later in DrawGameView. Use the image bounds so the click
+        // that brings an unfocused Game view forward can also recapture the cursor.
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        if (mouse.x >= m_GameImageMin.x && mouse.x < m_GameImageMin.x + m_GameImageSize.x &&
+            mouse.y >= m_GameImageMin.y && mouse.y < m_GameImageMin.y + m_GameImageSize.y)
+            m_CursorReleased = false;
+    }
     if (!m_Playing) m_CursorReleased = false;
+    const bool wantLock = m_Playing && m_Scripts->cursorLock != 0 && m_GameViewFocused && !m_CursorReleased;
     const bool hidden = m_Playing && m_GameViewFocused && !m_Scripts->cursorVisible && !m_CursorReleased;
     const int mode = wantLock ? GLFW_CURSOR_DISABLED : hidden ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL;
     if (mode != m_CursorMode && m_Window)

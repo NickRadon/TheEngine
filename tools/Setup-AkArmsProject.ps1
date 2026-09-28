@@ -161,7 +161,7 @@ entity 6 5 1 "AK Weapon Part"
   mesh 1 "Assets/AK/Animations/Weapon/A_W_AK_Idle.fbx#1" 1 1 1 0 0.5 "Assets/AK/Weapon.mat" 1
   prefab "" 2
 entity 10 5 1 "AimPoint"
-  transform 0.005 0.045 0.32 0 0 0 1 1 1 1 0 0 0
+  transform 0 0.0572885 0.141343 0 0 0 1 1 1 1 0 0 0
   prefab "" 3
 entity 2 0 1 "Directional Light"
   transform 0 3 0 -0.408218 -0.23457 -0.109382 0.875426 1 1 1 -50 -30 0

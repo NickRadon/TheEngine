@@ -47,7 +47,8 @@ namespace TheEngine
 
     public enum CursorLockMode { None = 0, Locked = 1, Confined = 2 }
 
-    /// <summary>Mouse cursor state in play mode (Locked hides it and keeps mouse deltas coming; Escape releases it).</summary>
+    /// <summary>Mouse cursor state in play mode. Locked captures it in the Game view; Escape releases it,
+    /// and clicking the Game view with either mouse button captures it again.</summary>
     public static unsafe class Cursor
     {
         public static CursorLockMode lockState

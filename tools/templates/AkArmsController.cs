@@ -16,6 +16,7 @@ public class AkArmsController : MonoBehaviour
     public bool invertVertical = false;
     public float maxPitch = 89f;
     public float aimBlendSpeed = 10f;
+    public bool lockCursorOnPlay = true;
     [Range(0f, 1f)] public float adsMovementScale = 1f;
     [Range(0f, 1f)] public float aimAnimationScale = 0.75f;
 
@@ -38,8 +39,8 @@ public class AkArmsController : MonoBehaviour
             Debug.LogError("Assign camera, arms, and weapon to AkArmsController.");
         try { actions = InputActionAsset.Load(inputActions); }
         catch (Exception e) { Debug.LogError("AK input actions: " + e.Message); }
-        Cursor.lockState = CursorLockMode.Locked;
-        Cursor.visible = false;
+        Cursor.lockState = lockCursorOnPlay ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = !lockCursorOnPlay;
     }
 
     void Update()
