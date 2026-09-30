@@ -97,6 +97,7 @@ struct AnimLayer
     AnimLayerBlending blending = AnimLayerBlending::Override;
     std::string referenceClip; // optional neutral clip for additive deltas; empty = state's first frame
     std::vector<std::string> mask;  // inline bones whose subtrees this layer affects (empty = whole body)
+    bool maskExact = false;         // when true, inline mask entries do not include descendants
     // Blend mask asset (.mask) shared with other controllers. When assigned it replaces `mask`.
     std::string maskAsset;
     std::vector<std::string> maskAssetBones;          // resolved from maskAsset (not serialized)

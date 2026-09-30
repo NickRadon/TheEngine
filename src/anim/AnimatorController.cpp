@@ -57,6 +57,7 @@ bool AnimatorController::Save(std::ostream& out) const
         out << "layer " << std::quoted(l.name) << ' ' << l.weight << ' ' << kBlendNames[static_cast<int>(l.blending)];
         for (const std::string& bone : l.mask) out << ' ' << std::quoted(bone);
         if (l.meshSpaceRotation) out << " @meshspace";
+        if (l.maskExact) out << " @exact";
         // Version 4 field; version 1-3 readers would take the path for a bone name.
         if (!l.maskAsset.empty()) out << " @mask " << std::quoted(l.maskAsset);
         out << "\n";
@@ -141,6 +142,7 @@ bool AnimatorController::Load(std::istream& file)
             while (in >> std::quoted(bone))
             {
                 if (bone == "@meshspace") l.meshSpaceRotation = true;
+                else if (bone == "@exact") l.maskExact = true;
                 else if (bone == "@mask") in >> std::quoted(l.maskAsset);
                 else l.mask.push_back(bone);
             }
@@ -630,11 +632,12 @@ const std::vector<uint8_t>& AnimatorInstance::Mask(int index, const Skeleton& sk
     if (l.maskSkeleton == &skeleton && l.mask.size() == skeleton.names.size()) return l.mask;
     const AnimLayer& layer = m_Controller->layers[index];
     l.mask.assign(skeleton.names.size(), layer.DrivesWholeBody() ? 1 : 0);
-    // A bone is in the mask when it or one of its ancestors is listed (parents precede children).
+    // A bone is in a subtree mask when it or one of its ancestors is listed (parents precede children).
     for (const std::string& bone : layer.EffectiveMask())
         if (const int b = skeleton.Find(bone); b >= 0) l.mask[b] = 1;
-    for (size_t i = 0; i < skeleton.names.size(); ++i)
-        if (skeleton.parents[i] >= 0 && l.mask[skeleton.parents[i]]) l.mask[i] = 1;
+    if (!layer.maskExact)
+        for (size_t i = 0; i < skeleton.names.size(); ++i)
+            if (skeleton.parents[i] >= 0 && l.mask[skeleton.parents[i]]) l.mask[i] = 1;
     l.maskSkeleton = &skeleton;
     return l.mask;
 }
