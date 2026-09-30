@@ -93,7 +93,8 @@ foreach ($action in @('MagCheck','Inspect','Reload','ReloadEmpty','Draw','Holste
     $a.Add((Transition 'Any State' $action $action 'if')); $a.Add((ReturnToIdle $action))
 }
 $a.Add('default "Idle"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
-$a.Add('layer "Aim" 0 override')
+$a.Add('layer "Aim" 0 additive "ik_hand_gun"')
+$a.Add('reference "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx"')
 $a.Add('state "Aim" clip "Assets/AK/Animations/Character/A_FP_AK_Idle.fbx" "" "" 0 1 320 100')
 $a.Add('default "Aim"'); $a.Add('entry 40 100'); $a.Add('any 40 300')
 Set-Content -LiteralPath (Join-Path $project 'Assets/Animators/AK_Arms.controller') -Value $a

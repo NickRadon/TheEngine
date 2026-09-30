@@ -21,6 +21,10 @@ entry 40 100
 any 40 300
 '@
 }
+$controller = [regex]::Replace($controller, '(?m)^layer "Aim" [^\r\n]*$', 'layer "Aim" 0 additive "ik_hand_gun"')
+if ($controller -notmatch '(?m)^reference "Assets/AK/Animations/Character/A_FP_AK_Idle\.fbx"$') {
+    $controller = [regex]::Replace($controller, '(?m)^(layer "Aim"[^\r\n]*)$', '$1' + "`nreference `"Assets/AK/Animations/Character/A_FP_AK_Idle.fbx`"")
+}
 Set-Content -LiteralPath $controllerPath -Value $controller
 
 $actions = Get-Content -LiteralPath $actionsPath -Raw | ConvertFrom-Json
