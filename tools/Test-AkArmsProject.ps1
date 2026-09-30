@@ -31,7 +31,11 @@ $cases = @(
     @{ name='toggle-fire-mode'; args=@('--hold','Mouse0','--press','X@0.1,X@0.8'); arms='Idle'; weapon='Any'; seconds='2.2' },
     @{ name='aim'; args=@('--hold','Mouse1'); arms='Idle'; weapon='Idle' },
     @{ name='aim-walk'; args=@('--hold','Mouse1,W'); arms='Walk'; weapon='Idle' },
-    @{ name='aim-sprint'; args=@('--hold','Mouse1,W,LeftShift'); arms='Sprint'; weapon='Idle'; seconds='2.2'; frame='03' },
+    @{ name='aim-sprint'; args=@('--hold','Mouse1,W,LeftShift'); arms='Walk'; weapon='Idle'; seconds='2.2'; frame='03' },
+    @{ name='backward-sprint'; args=@('--hold','S,LeftShift'); arms='Walk'; weapon='Idle' },
+    @{ name='jump'; args=@('--press','Space@0.25'); arms='Idle'; weapon='Idle'; seconds='2.5'; frame='03' },
+    @{ name='wall-stop'; args=@('--hold','D'); arms='Idle'; weapon='Idle'; seconds='2.5'; frame='04' },
+    @{ name='reload-priority'; args=@('--press','R@0.25,I@0.25,M@0.25,Mouse0@0.25'); arms='Reload'; weapon='Reload'; seconds='2.5'; frame='04' },
     @{ name='aim-fire'; args=@('--hold','Mouse1','--press','Mouse0@0.25'); arms='Idle'; weapon='Fire' },
     @{ name='aim-reload'; args=@('--hold','Mouse1','--press','R@0.25'); arms='Reload'; weapon='Reload'; seconds='2.5'; frame='04' },
     @{ name='aim-mag-check'; args=@('--hold','Mouse1','--press','M@0.25'); arms='MagCheck'; weapon='MagCheck'; seconds='2.5'; frame='04' },
@@ -73,6 +77,26 @@ foreach ($case in $cases) {
             throw 'X did not toggle full-auto back to semi-auto.'
         }
         Write-Output "$($case.name): $($shots.Count) firing-animation triggers"
+    }
+    if ($case.name -eq 'reload-priority' -and @($lines | Select-String -Pattern '\[ak-fire\] shot ').Count) {
+        throw 'Reload must win over simultaneous fire, inspect and magazine-check input.'
+    }
+    if ($case.name -in @('jump', 'wall-stop')) {
+        $positions = @($lines | ForEach-Object {
+            if ($_ -match '\[playtest\] camera pos \(([-\d.]+) ([-\d.]+) ([-\d.]+)\)') {
+                [pscustomobject]@{ x=[double]$Matches[1]; y=[double]$Matches[2]; z=[double]$Matches[3] }
+            }
+        })
+        if ($positions.Count -eq 0) { throw "$($case.name): camera positions missing." }
+        if ($case.name -eq 'jump') {
+            $peak = ($positions.y | Measure-Object -Maximum).Maximum
+            if ($peak -lt 2.1 -or [Math]::Abs($positions[-1].y - 1.65) -gt 0.15) {
+                throw "Jump did not rise and land: peak=$peak, final=$($positions[-1].y)."
+            }
+            Write-Output "jump: camera peak $peak m, landed at $($positions[-1].y) m"
+        } elseif ($positions[-1].x -lt 0.8 -or $positions[-1].x -gt 1.3) {
+            throw "Wall collision failed: final x=$($positions[-1].x)."
+        } else { Write-Output "wall-stop: capsule stopped at x=$($positions[-1].x) m" }
     }
     if ($case.name -like 'aim*') {
         $weights = @($lines | ForEach-Object { if ($_ -match 'aim layer weight ([-\d.]+)') { [double]$Matches[1] } })

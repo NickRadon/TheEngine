@@ -620,7 +620,7 @@ void AnimatorInstance::ConsumeTriggers(const AnimTransition& t)
     for (const AnimCondition& c : t.conditions)
     {
         const int i = m_Controller->FindParam(c.param);
-        if (i >= 0 && m_Controller->params[i].type == AnimParamType::Trigger) m_Values[i] = 0.0f;
+        if (i >= 0 && m_Controller->params[i].type == AnimParamType::Trigger) m_ConsumedTriggers.push_back(i);
     }
 }
 
@@ -899,6 +899,9 @@ void AnimatorInstance::Update(float dt, ClipLibrary& clips, const Skeleton& skel
         pose = skeleton.rest;
         return;
     }
+    // Every layer sees the same trigger snapshot, including zero-weight layers. Consuming a
+    // shared action on the base layer must not prevent an upper-body layer from entering it.
+    m_ConsumedTriggers.clear();
     // Base layer: the whole body and the root motion.
     UpdateLayer(0, dt, clips, skeleton, extractRootMotion, pose, motion);
 
@@ -965,6 +968,7 @@ void AnimatorInstance::Update(float dt, ClipLibrary& clips, const Skeleton& skel
             }
         }
     }
+    for (int trigger : m_ConsumedTriggers) m_Values[trigger] = 0.0f;
 }
 
 void AnimatorInstance::SamplePreview(ClipLibrary& clips, const Skeleton& skeleton, Pose& pose)

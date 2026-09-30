@@ -245,6 +245,7 @@ private:
 
     const AnimatorController* m_Controller = nullptr;
     std::vector<float> m_Values;
+    std::vector<int> m_ConsumedTriggers; // cleared after every layer has evaluated this frame
     std::vector<LayerState> m_Layers;
     Pose m_PoseB, m_PoseC, m_LayerPose, m_RefPose;
     std::vector<glm::mat4> m_BaseModel, m_LayerModel;

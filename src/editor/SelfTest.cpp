@@ -1631,6 +1631,28 @@ public class AnimApiDefaults : MonoBehaviour
         t.Check(evaluated && pose.size() == 3 && std::abs(pose[2].t.x - 3.5f) < 1e-4f,
                 "clip sources, a weighted mixer and a writable job evaluate in graph order");
 
+        AnimatorController sharedAction;
+        sharedAction.params = { { "Reload", AnimParamType::Trigger, 0 }, { "Unused", AnimParamType::Trigger, 0 } };
+        AnimState idle, reload;
+        idle.name = "Idle"; idle.clip = "streamtest:a";
+        reload.name = "Reload"; reload.clip = "streamtest:b";
+        sharedAction.Base().states = { idle, reload };
+        sharedAction.Base().defaultState = "Idle";
+        AnimTransition action;
+        action.from = "Idle"; action.to = "Reload"; action.duration = 0;
+        action.conditions = { { "Reload", AnimConditionMode::If, 0 } };
+        sharedAction.Base().transitions.push_back(action);
+        sharedAction.layers.push_back(sharedAction.Base());
+        sharedAction.layers[1].weight = 0;
+        AnimatorInstance layered;
+        layered.Reset(sharedAction);
+        layered.SetParam("Reload", 1);
+        layered.SetParam("Unused", 1);
+        layered.Update(0.016f, clips, rig, false, pose, motion);
+        t.Check(layered.CurrentState(0) == 1 && layered.CurrentState(1) == 1 &&
+                    layered.GetParam("Reload") == 0 && layered.GetParam("Unused") == 1,
+                "shared action triggers reach every layer, including muted layers, and only used triggers clear");
+
         const char* aeOverride = std::getenv("THEENGINE_AE_ASSETS");
         const char* profile = std::getenv("USERPROFILE");
         const std::filesystem::path aeAssets = aeOverride ? std::filesystem::path(aeOverride) :

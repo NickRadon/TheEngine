@@ -138,6 +138,7 @@ foreach($item in @(@('Sprint','<Keyboard>/leftShift'),@('Fire','<Mouse>/leftButt
     AddAction $item[0] 'Button' 'Button'; AddBinding $item[0] $item[1]
 }
 AddAction 'Aim' 'Button' 'Button'; AddBinding 'Aim' '<Mouse>/rightButton'
+AddAction 'Jump' 'Button' 'Button'; AddBinding 'Jump' '<Keyboard>/space'
 $asset=[ordered]@{version=1;name='AK Controls';maps=@($map);controlSchemes=@()}
 $asset | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $project 'Assets/Input/AK_Controls.inputactions')
 
@@ -147,6 +148,7 @@ name "AK Arms"
 sky 1 0.04 5 1 0.5 0.5 0.5 0.369 0.349 0.341 1.3 1 0.45 0.85 1 0.6 1 0.19 0.3 0.47 80 1 1 2 1
 entity 3 0 1 "Player"
   transform 0 0 0 0 0 0 1 1 1 1 0 0 0
+  charactercontroller 1 1.8 0.3 0 0.9 0 50 0.3
   script 1 "AkArmsController"
     field "cameraObject" "GameObject" "entity:1"
     field "armsObject" "GameObject" "entity:4"
@@ -176,6 +178,14 @@ entity 10 5 1 "AimPoint"
 entity 2 0 1 "Directional Light"
   transform 0 3 0 -0.408218 -0.23457 -0.109382 0.875426 1 1 1 -50 -30 0
   light 1 1 0.957 0.839 1 1 1 0 10 30 21.8
+entity 11 0 1 "Ground"
+  transform 0 -0.5 0 0 0 0 1 40 1 40 0 0 0
+  mesh 1 "Cube" 0.35 0.38 0.42 0 0.4 "" 1
+  collider 1 0 0 0 0 1 1 1 0.5 2 0 0.5 0
+entity 12 0 1 "Movement Test Wall"
+  transform 2 1 0 0 0 0 1 1 2 2 0 0 0
+  mesh 1 "Cube" 0.45 0.5 0.6 0 0.4 "" 1
+  collider 1 0 0 0 0 1 1 1 0.5 2 0 0.5 0
 '@
 Set-Content -LiteralPath (Join-Path $project 'Assets/Scenes/AK_Arms.scene') -Value $scene
 & (Join-Path $repo 'tools/Install-AkWeaponPrefab.ps1') -ProjectRoot $project

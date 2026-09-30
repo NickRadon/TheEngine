@@ -11,6 +11,14 @@ public class AkArmsController : MonoBehaviour
     public string inputActions = "Assets/Input/AK_Controls.inputactions";
     public float walkSpeed = 2.5f;
     public float sprintSpeed = 4.5f;
+    public float acceleration = 14f;
+    public float deceleration = 18f;
+    public float jumpHeight = 1f;
+    public float coyoteTime = 0.12f;
+    public float jumpBufferTime = 0.12f;
+    public float gravity = 9.81f;
+    public float maxFallSpeed = 25f;
+    [Range(0f, 1f)] public float aimMoveSpeedScale = 0.65f;
     public float mouseSensitivity = 1f;
     public bool invertHorizontal = false;
     public bool invertVertical = false;
@@ -41,12 +49,18 @@ public class AkArmsController : MonoBehaviour
     float recoilPitch;
     float recoilKick;
     int shotCount;
+    CharacterController mover;
+    Vector3 horizontalVelocity;
+    float verticalVelocity;
+    float lastGroundedTime = -100f;
+    float lastJumpTime = -100f;
 
     void Start()
     {
         arms = armsObject?.GetComponent<Animator>();
         weapon = weaponObject?.GetComponent<Animator>();
         gunPivot = armsObject?.GetComponent<AkGunPivot>();
+        mover = GetComponent<CharacterController>();
         if (armsObject != null)
         {
             armsBasePosition = armsObject.transform.localPosition;
@@ -76,10 +90,44 @@ public class AkArmsController : MonoBehaviour
         Vector2 move = actions.ReadVector2("Player/Move");
         float length = Mathf.Sqrt(move.x * move.x + move.y * move.y);
         if (length > 1f) { move.x /= length; move.y /= length; }
-        bool moving = length > 0.01f;
-        bool sprinting = moving && actions.IsPressed("Player/Sprint");
-        float speed = sprinting ? sprintSpeed : walkSpeed;
-        transform.Translate(move.x * speed * Time.deltaTime, 0f, -move.y * speed * Time.deltaTime);
+        bool aimRequested = actions.IsPressed("Player/Aim");
+        bool fireRequested = actions.WasPressedThisFrame("Player/Fire") ||
+                             (fullAuto && actions.IsPressed("Player/Fire"));
+        string requestedAction = actions.WasPressedThisFrame("Player/Reload") ? "Reload" :
+            actions.WasPressedThisFrame("Player/MagCheck") ? "MagCheck" :
+            actions.WasPressedThisFrame("Player/Inspect") ? "Inspect" : null;
+        bool busy = ActionPlaying();
+        bool sprinting = move.y > 0.5f && !aimRequested && !busy && !fireRequested &&
+                         requestedAction == null && actions.IsPressed("Player/Sprint");
+        float speed = Mathf.Max(0f, sprinting ? sprintSpeed : walkSpeed);
+        if (aimRequested) speed *= Mathf.Clamp01(aimMoveSpeedScale);
+        Vector3 targetVelocity = transform.rotation * new Vector3(move.x * speed, 0f, -move.y * speed);
+        horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity,
+            Mathf.Max(0f, length > 0.01f ? acceleration : deceleration) * Time.deltaTime);
+        if (mover != null && mover.enabled)
+        {
+            if (mover.isGrounded && verticalVelocity <= 0f)
+            {
+                lastGroundedTime = Time.time;
+                verticalVelocity = -2f;
+            }
+            if (actions.WasPressedThisFrame("Player/Jump")) lastJumpTime = Time.time;
+            if (Time.time - lastGroundedTime <= Mathf.Max(0f, coyoteTime) &&
+                Time.time - lastJumpTime <= Mathf.Max(0f, jumpBufferTime))
+            {
+                verticalVelocity = Mathf.Sqrt(2f * Mathf.Max(0f, gravity) * Mathf.Max(0f, jumpHeight));
+                lastGroundedTime = lastJumpTime = -100f;
+            }
+            verticalVelocity = Mathf.Max(verticalVelocity - Mathf.Max(0f, gravity) * Time.deltaTime,
+                                         -Mathf.Max(0f, maxFallSpeed));
+            CollisionFlags hit = mover.Move((horizontalVelocity + Vector3.up * verticalVelocity) * Time.deltaTime);
+            if ((hit & CollisionFlags.Above) != 0 && verticalVelocity > 0f) verticalVelocity = 0f;
+            Vector3 actual = mover.velocity;
+            horizontalVelocity = new Vector3(actual.x, 0f, actual.z);
+        }
+        else transform.position += horizontalVelocity * Time.deltaTime;
+        bool moving = horizontalVelocity.sqrMagnitude > 0.01f;
+        sprinting = sprinting && moving;
 
         Vector2 look = actions.ReadVector2("Player/Look");
         float horizontal = look.x * mouseSensitivity * (invertHorizontal ? -1f : 1f);
@@ -88,8 +136,8 @@ public class AkArmsController : MonoBehaviour
         pitch = Mathf.Clamp(pitch + vertical, -maxPitch, maxPitch);
         if (cameraObject != null) cameraObject.transform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
 
-        float targetAim = actions.IsPressed("Player/Aim") ? 1f : 0f;
-        aimWeight += (targetAim - aimWeight) * Mathf.Clamp(Time.deltaTime * aimBlendSpeed, 0f, 1f);
+        float targetAim = aimRequested ? 1f : 0f;
+        aimWeight += (targetAim - aimWeight) * (1f - MathF.Exp(-Mathf.Max(0f, aimBlendSpeed) * Time.deltaTime));
         float idleOverlay = aimWeight * (1f - Mathf.Clamp01(aimAnimationScale));
         if (arms != null)
         {
@@ -109,12 +157,10 @@ public class AkArmsController : MonoBehaviour
             Debug.Log("[ak-fire] mode " + (fullAuto ? "full-auto" : "semi-auto"));
         }
         bool firePressed = actions.WasPressedThisFrame("Player/Fire");
-        if ((firePressed || (fullAuto && actions.IsPressed("Player/Fire"))) &&
-            Time.time >= nextShotTime && !ActionPlaying())
+        if (!busy && requestedAction != null) TriggerBoth(requestedAction);
+        else if ((firePressed || (fullAuto && actions.IsPressed("Player/Fire"))) &&
+            Time.time >= nextShotTime && !busy)
             FireOnce();
-        if (actions.WasPressedThisFrame("Player/MagCheck")) TriggerBoth("MagCheck");
-        if (actions.WasPressedThisFrame("Player/Inspect")) TriggerBoth("Inspect");
-        if (actions.WasPressedThisFrame("Player/Reload")) TriggerBoth("Reload");
         gunPivot?.SetRecoil(recoilPitch, recoilKick);
     }
 
@@ -138,10 +184,14 @@ public class AkArmsController : MonoBehaviour
 
     bool ActionPlaying()
     {
-        if (weapon == null) return false;
-        string state = weapon.currentStateName;
-        return state == "Reload" || state == "ReloadEmpty" || state == "MagCheck" || state == "Inspect";
+        return BusyAnimator(arms) || BusyAnimator(weapon);
     }
+
+    static bool BusyAnimator(Animator animator) => animator != null &&
+        (BusyState(animator.StateName(0, false)) || BusyState(animator.StateName(0, true)));
+
+    static bool BusyState(string state) => state == "Reload" || state == "ReloadEmpty" ||
+        state == "MagCheck" || state == "Inspect" || state == "Draw" || state == "Holster" || state == "Melee";
 
     void FireOnce()
     {
