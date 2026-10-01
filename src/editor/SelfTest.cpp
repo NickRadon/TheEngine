@@ -1131,6 +1131,120 @@ void Editor::EnableSelfTest(const std::string& captureDir, bool animationOnly)
                     std::fabs(roundTripAim.layers[1].states[0].offsets[0].position.x - 0.1f) < 1e-4f,
                 "additive reference and pose offsets survive controller serialization");
 
+        // Additive regression: different absolute neutral poses must not leak into a crossfade.
+        {
+            clips.Add("add:a", makeClip("a", {0,0}, 1.2f, 1.2f, 0.3f, 0.3f));
+            clips.Add("add:b", makeClip("b", {0,0}, 1.8f, 1.8f, -0.7f, -0.7f));
+            AnimatorController ac;
+            ac.params = {{"Go", AnimParamType::Float, 0.0f}};
+            ac.Base().states = {base}; ac.Base().defaultState = base.name;
+            AnimLayer al; al.blending = AnimLayerBlending::Additive;
+            AnimState aa; aa.name = "A"; aa.clip = "add:a";
+            AnimState bb; bb.name = "B"; bb.clip = "add:b";
+            al.states = {aa, bb}; al.defaultState = "A";
+            AnimTransition at; at.from = "A"; at.to = "B"; at.duration = 0.4f;
+            at.interruption = AnimInterruption::Next;
+            at.conditions = {{"Go", AnimConditionMode::Greater, 0.5f}};
+            AnimTransition back = at; back.from = "B"; back.to = "A";
+            back.conditions = {{"Go", AnimConditionMode::Less, 0.5f}};
+            al.transitions = {at, back}; ac.layers.push_back(al);
+            AnimatorInstance test; test.Reset(ac); test.SetParam("Go", 1.0f);
+            test.Update(0.2f, clips, sk, true, pose, motion);
+            t.Check(std::fabs(pose[1].t.y - 1.0f) < 1e-5f && std::fabs(pose[2].r.w - 1.0f) < 1e-5f,
+                    "additive crossfade blends deltas from independent neutral poses");
+            test.SetParam("Go", 0.0f); test.Update(0.1f, clips, sk, true, pose, motion);
+            t.Check(test.TransitionInterrupted(1) && std::fabs(pose[1].t.y - 1.0f) < 1e-5f,
+                    "interrupted additive sources retain their own references");
+            test.Update(0.5f, clips, sk, true, pose, motion);
+            t.Check(!test.IsInTransition(1) && std::fabs(pose[1].t.y - 1.0f) < 1e-5f,
+                    "additive transition completion does not switch the reference pose");
+
+            auto& layer = ac.layers[1]; layer.transitions.clear();
+            layer.states[0].type = AnimMotionType::BlendTree1D; layer.states[0].paramX = "Go";
+            layer.states[0].children = {{"add:a",0,{0,0},1}, {"add:b",1,{1,0},1}};
+            test.Reset(ac); test.SetParam("Go",0.5f); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(pose[1].t.y - 1.0f) < 1e-5f && std::fabs(pose[2].r.w - 1.0f) < 1e-5f,
+                    "additive blend tree converts each child to its own neutral delta");
+            layer.states[0] = aa; layer.states[0].clip = "i:lean"; layer.states[0].loop = false;
+            layer.referenceTime = 1.0f;
+            test.Reset(ac); test.Update(1,clips,sk,true,pose,motion);
+            t.Check(std::fabs(pose[1].t.y - 1.0f) < 1e-5f, "reference time one samples the end without looping");
+            layer.referenceTime = 0.5f;
+            test.Reset(ac); test.Update(1,clips,sk,true,pose,motion);
+            t.Check(std::fabs(pose[1].t.y - 1.1f) < 1e-5f, "normalized reference time controls additive translation");
+            layer.referenceRest = true;
+            test.Reset(ac); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(pose[1].t.y - 1.2f) < 1e-5f, "skeleton rest reference preserves a held offset");
+            AnimatorController reload;
+            t.Check(reload.LoadString(ac.ToString()) && reload.layers[1].referenceRest &&
+                    reload.layers[1].referenceTime == 0.5f, "version 6 reference settings round trip");
+            AnimatorController legacyAdditive;
+            t.Check(legacyAdditive.LoadString("TheEngineAnimator 5\nlayer \"Base\" 1 override\nlayer \"Detail\" 1 additive\nreference \"i:idle\"\n") &&
+                    legacyAdditive.layers[1].referenceClip == "i:idle" && legacyAdditive.layers[1].referenceTime == 0 &&
+                    !legacyAdditive.layers[1].referenceRest, "version 5 additive references retain first-frame defaults");
+            layer.referenceRest = false; layer.referenceClip = "missing-additive-reference.fbx";
+            test.Reset(ac); test.Update(0.5f,clips,sk,true,pose,motion);
+            t.Check(std::fabs(pose[1].t.y - 1.0f) < 1e-5f && !ac.Validate(&clips,&sk).empty(),
+                    "missing explicit reference is reported and contributes identity");
+
+            AnimationClip scaled = makeClip("scaled",{0,0},1,1,0,0);
+            for (auto& frame : scaled.tracks[2].frames) { frame.s = glm::vec3(2); frame.r = glm::quat(-1,0,0,0); }
+            clips.Add("add:scale",scaled);
+            layer.referenceClip = "i:idle"; layer.referenceTime = 0;
+            layer.states[0].clip = "add:scale";
+            test.Reset(ac); test.SetLayerWeight(1,0.5f); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(glm::length(pose[2].s - glm::vec3(1.5f)) < 1e-5f && std::fabs(pose[2].r.w - 1) < 1e-5f,
+                    "half-weight additive scale uses a ratio and antipodal rotations stay neutral");
+            test.SetLayerWeight(1,1); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(glm::length(pose[2].s - glm::vec3(2)) < 1e-5f, "full additive scale preserves the authored ratio");
+            test.SetLayerWeight(1,0); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(glm::length(pose[2].s - glm::vec3(1)) < 1e-5f, "zero additive weight is identity");
+            for (auto& frame : scaled.tracks[2].frames) frame.s = glm::vec3(0);
+            clips.Add("add:zero",scaled); layer.referenceClip = "add:zero";
+            test.Reset(ac); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(glm::length(pose[2].s - glm::vec3(1)) < 1e-5f, "zero reference scale safely contributes unit scale");
+
+            AnimationClip tilted = makeClip("tilted",{0,0},1,1,0,0);
+            const glm::quat tilt = glm::angleAxis(0.8f,glm::vec3(0,0,1));
+            for (auto& frame : tilted.tracks[1].frames) frame.r = tilt;
+            clips.Add("add:tilted",tilted);
+            AnimationClip pitch = makeClip("pitch",{0,0},1,1,0,0);
+            const glm::quat turn = glm::angleAxis(0.5f,glm::vec3(1,0,0));
+            for (auto& frame : pitch.tracks[2].frames) frame.r = turn;
+            clips.Add("add:pitch",pitch);
+            ac.Base().states[0].clip = "add:tilted";
+            layer.states[0].clip = "add:pitch"; layer.referenceClip = "i:idle";
+            layer.meshSpaceRotation = true; layer.mask = {"spine_01"};
+            test.Reset(ac); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(glm::dot(pose[1].r * pose[2].r, turn * tilt)) > 0.99999f &&
+                    std::fabs(glm::dot(pose[1].r,tilt)) > 0.99999f,
+                    "mesh-space additive aims in model axes and preserves unmasked parent");
+            test.SetLayerWeight(1,0.5f); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(glm::dot(pose[1].r * pose[2].r, glm::angleAxis(0.25f,glm::vec3(1,0,0)) * tilt)) > 0.99999f,
+                    "mesh-space half weight applies half the angular offset");
+            layer.meshSpaceRotation = false;
+            test.Reset(ac); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(glm::dot(pose[1].r * pose[2].r, tilt * turn)) > 0.99999f,
+                    "local additive retains parent-relative rotation axes");
+            // A parent's model rotation appears in descendants' deltas; reconstruction must not double it.
+            layer.meshSpaceRotation = true; layer.mask.clear(); layer.states[0].clip = "add:tilted";
+            ac.Base().states[0].clip = "i:idle";
+            test.Reset(ac); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(glm::dot(pose[1].r,tilt)) > 0.99999f && std::fabs(pose[2].r.w - 1) < 1e-5f,
+                    "mesh-space child reconstruction avoids doubling ancestor rotation");
+            layer.mask = {"pelvis"}; layer.maskExact = true;
+            test.Reset(ac); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(glm::dot(pose[1].r,tilt)) > 0.99999f && std::fabs(pose[2].r.w - 1) < 1e-5f,
+                    "exact additive mask changes only the selected local transform");
+            layer.mask.clear(); layer.maskExact = false;
+            layer.states.clear(); test.Reset(ac); test.Update(0,clips,sk,true,pose,motion);
+            t.Check(std::fabs(pose[1].t.y - 1) < 1e-5f, "empty additive layer contributes identity");
+            layer.states = {aa}; layer.defaultState = "A"; layer.states[0].clip = "i:fwd";
+            test.Reset(ac); test.Update(0.5f,clips,sk,true,pose,motion);
+            t.Check(glm::length(motion.position) < 1e-5f && glm::length(pose[0].t) < 1e-5f,
+                    "additive locomotion neither exports nor duplicates planar root motion");
+        }
+
         // ---------- Exit time on a non-looping state fires once ----------
         AnimatorController xc;
         AnimState long1; long1.name = "Long"; long1.clip = "i:raise"; long1.loop = false;
@@ -1195,13 +1309,13 @@ void Editor::EnableSelfTest(const std::string& captureDir, bool animationOnly)
         // ---------- Current format round trip, plus version 3 compatibility ----------
         const std::string text = ic.ToString();
         AnimatorController current;
-        const bool currentOk = current.LoadString(text) && text.rfind("TheEngineAnimator 5", 0) == 0 &&
+        const bool currentOk = current.LoadString(text) && text.rfind("TheEngineAnimator 6", 0) == 0 &&
                                text.find(" interrupt next ordered 0") != std::string::npos &&
                                current.Base().transitions.size() == 2 &&
                                current.Base().transitions[0].interruption == AnimInterruption::Next &&
                                !current.Base().transitions[0].ordered &&
                                current.Base().transitions[1].interruption == AnimInterruption::None;
-        t.Check(currentOk, "version 5 .controller files store and reload the interruption settings");
+        t.Check(currentOk, "version 6 .controller files store and reload the interruption settings");
 
         const std::string v3 =
             "TheEngineAnimator 3\n"
@@ -1420,11 +1534,11 @@ public class AnimApiDefaults : MonoBehaviour
         AnimatorController loaded;
         std::ifstream controllerFile(controllerPath);
         const std::string controllerText((std::istreambuf_iterator<char>(controllerFile)), std::istreambuf_iterator<char>());
-        const bool v4ok = loaded.Load(controllerPath) && controllerText.rfind("TheEngineAnimator 5", 0) == 0 &&
+        const bool v4ok = loaded.Load(controllerPath) && controllerText.rfind("TheEngineAnimator 6", 0) == 0 &&
                           controllerText.find("@mask \"Assets/_test.mask\"") != std::string::npos &&
                           loaded.layers.size() == 2 && loaded.layers[1].maskAsset == maskPath &&
                           loaded.layers[1].EffectiveMask() == source.bones;
-        t.Check(v4ok, "version 5 controllers preserve a blend mask reference and resolve its bones");
+        t.Check(v4ok, "version 6 controllers preserve a blend mask reference and resolve its bones");
 
         Skeleton skeleton;
         skeleton.names = { "root", "pelvis", "spine_01" };

@@ -93,8 +93,9 @@ ClipBinding BindClip(const AnimationClip& clip, const Skeleton& skeleton);
 
 // Samples a clip into a pose at time (seconds). With extractRootMotion, the root bone's planar motion relative to
 // the first frame is removed from the pose (the entity moves instead).
+// sampleScale opts additive sampling into authored scale relative to the source track's rest scale.
 void SampleClip(const AnimationClip& clip, const ClipBinding& binding, const Skeleton& skeleton, float time, bool extractRootMotion,
-                Pose& out);
+                Pose& out, bool sampleScale = false);
 
 // Root motion from time a to b (handles looping wrap when b < a).
 RootMotion ClipRootMotion(const AnimationClip& clip, float a, float b, bool looped);

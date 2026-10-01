@@ -483,9 +483,12 @@ void Editor::DrawAnimator()
         if (ImGui::Combo("##blending", &blending, "Override Additive ")) { layer.blending = static_cast<AnimLayerBlending>(blending); MarkAnimEdited(); }
         if (layer.blending == AnimLayerBlending::Additive)
         {
+            if (ImGui::Checkbox("Skeleton rest reference", &layer.referenceRest)) MarkAnimEdited();
+            if (ImGui::SliderFloat("Reference time", &layer.referenceTime, 0.0f, 1.0f)) MarkAnimEdited();
+            if (ImGui::Checkbox("Mesh-space additive rotation", &layer.meshSpaceRotation)) MarkAnimEdited();
             ImGui::TextDisabled("Neutral reference clip");
             if (ClipField("referenceClip", layer.referenceClip)) MarkAnimEdited();
-            ImGui::TextWrapped("Pose offsets are measured against this clip's first frame. Leave empty to use the selected state's first frame.");
+            ImGui::TextWrapped("Reference time is normalized. Leave the clip empty to reference each motion independently. Rest reference takes priority. Mesh space keeps aiming axes consistent; translation stays local.");
         }
         ImGui::TextDisabled("Mask Asset");
         const std::string maskLabel = layer.maskAsset.empty() ? "None (Blend Mask)" : fs::path(layer.maskAsset).stem().string();

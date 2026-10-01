@@ -95,7 +95,9 @@ struct AnimLayer
     std::string name = "Base Layer";
     float weight = 1.0f;
     AnimLayerBlending blending = AnimLayerBlending::Override;
-    std::string referenceClip; // optional neutral clip for additive deltas; empty = state's first frame
+    std::string referenceClip; // optional neutral clip for additive deltas; empty = each clip at referenceTime
+    float referenceTime = 0.0f; // normalized [0,1], never wrapped
+    bool referenceRest = false; // target skeleton rest pose instead of a clip
     std::vector<std::string> mask;  // inline bones whose subtrees this layer affects (empty = whole body)
     bool maskExact = false;         // when true, inline mask entries do not include descendants
     // Blend mask asset (.mask) shared with other controllers. When assigned it replaces `mask`.
@@ -112,6 +114,7 @@ struct AnimLayer
     // Override layers: the mask's top bones take the layer's rotation in model space instead of relative to their
     // parent (Unreal's "mesh space rotation blend"), so an upper body keeps facing where its clip intends even
     // when the base layer turns the hips differently.
+    // Additive layers: extract/apply every included bone's rotation delta in model space.
     bool meshSpaceRotation = false;
     std::vector<AnimState> states;
     std::vector<AnimTransition> transitions;
@@ -138,8 +141,8 @@ struct AnimIssue
 struct AnimatorController
 {
     static constexpr const char* kAnyState = AnimLayer::kAnyState;
-    // 1 = single layer, 2 = layers, 3 = interruption, 4 = blend mask, 5 = additive reference and pose offsets
-    static constexpr int kCurrentVersion = 5;
+    // 1 = single layer, 2 = layers, 3 = interruption, 4 = blend mask, 5 = additive reference and pose offsets, 6 = reference settings
+    static constexpr int kCurrentVersion = 6;
 
     std::vector<AnimParam> params;
     std::vector<AnimLayer> layers{ AnimLayer{} }; // layer 0 is the base layer
@@ -232,7 +235,7 @@ private:
     }
     void Weights(const AnimState& state, ClipLibrary& clips, std::vector<WeightedClip>& out) const;
     float StateLength(const AnimState& state, ClipLibrary& clips) const; // seconds for normalized time 0..1
-    void EvaluateState(const AnimState& state, float normalizedTime, ClipLibrary& clips, const Skeleton& skeleton, bool extract, Pose& out);
+    void EvaluateState(const AnimState& state, float normalizedTime, ClipLibrary& clips, const Skeleton& skeleton, bool extract, Pose& out, const AnimLayer* additive = nullptr);
     RootMotion StateMotion(const AnimState& state, float fromNormalized, float toNormalized, ClipLibrary& clips) const;
     bool ConditionsMet(const AnimTransition& t) const;
     void ConsumeTriggers(const AnimTransition& t);
@@ -248,6 +251,6 @@ private:
     std::vector<float> m_Values;
     std::vector<int> m_ConsumedTriggers; // cleared after every layer has evaluated this frame
     std::vector<LayerState> m_Layers;
-    Pose m_PoseB, m_PoseC, m_LayerPose, m_RefPose;
+    Pose m_PoseB, m_PoseC, m_LayerPose;
     std::vector<glm::mat4> m_BaseModel, m_LayerModel;
 };

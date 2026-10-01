@@ -98,7 +98,7 @@ namespace
     glm::quat YawRotation(float yaw) { return glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f)); }
 }
 
-void SampleClip(const AnimationClip& clip, const ClipBinding& binding, const Skeleton& skeleton, float time, bool extractRootMotion, Pose& out)
+void SampleClip(const AnimationClip& clip, const ClipBinding& binding, const Skeleton& skeleton, float time, bool extractRootMotion, Pose& out, bool sampleScale)
 {
     out.resize(skeleton.names.size());
     for (size_t i = 0; i < skeleton.names.size(); ++i)
@@ -115,6 +115,12 @@ void SampleClip(const AnimationClip& clip, const ClipBinding& binding, const Ske
         // use the clip's local translations so their moving parts remain animated.
         x.r = sampled.r;
         x.s = skeleton.rest[i].s;
+        if (sampleScale)
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const float restScale = clip.tracks[track].rest.s[axis];
+                if (std::fabs(restScale) > 1e-6f) x.s[axis] *= sampled.s[axis] / restScale;
+            }
         const bool isRoot = static_cast<int>(i) == skeleton.root;
         const bool isPelvis = static_cast<int>(i) == skeleton.pelvis;
         x.t = isRoot || binding.animatedTranslation[i] ? sampled.t : isPelvis ? sampled.t * binding.pelvisScale : skeleton.rest[i].t;

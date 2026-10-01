@@ -16,8 +16,10 @@ TheEngine's `.controller` files are plain text. The first line is `TheEngineAnim
 | 2 | layers update | adds `layer` lines (name, weight, blending, mask bones, `@meshspace`) |
 | 3 | interruption update | adds `interrupt <mode> ordered <0\|1>` to every `transition` line |
 | 4 | blend mask assets | adds an optional `@mask "path"` reference to a `layer` line |
+| 5 | reference clips and pose offsets | adds `reference` and `poseoffset` records |
+| 6 | additive reference controls | adds `reference_settings <normalized time> <rest pose flag>` |
 
-Loaders accept versions 1 through 4: version 1 and 2 files gain `interruption = none`, `ordered = 0`, and an absent `active` field in a scene defaults to true, so existing projects and controllers keep working unchanged. Only new saves are written as version 4.
+Loaders accept versions 1 through 6: version 1 and 2 files gain `interruption = none`, `ordered = 0`, and an absent `active` field in a scene defaults to true, so existing projects and controllers keep working unchanged. New saves are written as version 6.
 
 Line types in order: `param`, `layer`, `state` (+ indented `child` lines for blend trees), `transition` (+ indented `condition` lines), `default`, `entry`, `any`.
 
@@ -44,7 +46,23 @@ When a candidate fires mid-blend, the interrupted blend is **not** snapshotted a
 
 ### Layers and the additive reference pose
 
-The Base Layer supplies the full-body pose and root motion. Upper layers can use override or additive blending and a bone-subtree mask (a bone is in the mask when it or one of its ancestors is listed). Override layers may use mesh-space rotation on the top bones of a mask. **Additive layers add the difference between the layer's pose and its reference pose, where the reference pose is the layer's current state sampled at normalized time 0** (the state's first frame). Layer weight scales both blend modes; the base layer always has weight 1.
+The Base Layer supplies the full-body pose and root motion. Upper layers can use override or additive blending and a bone-subtree mask. Override layers may use mesh-space rotation on the top bones of a mask.
+
+Additive layers convert each contributing clip into a reference-relative delta **before** blend trees, transitions and interrupted sources are mixed. This prevents different neutral poses from leaking into crossfades. An empty motion contributes identity. Layer order is explicit: later layers operate on the result of earlier layers.
+
+The Animator layer panel provides three reference choices:
+
+- Empty neutral clip: each contributing clip at **Reference time** (default zero). State pose offsets are also present in its automatic reference, so constant offsets cancel.
+- Explicit neutral clip: the selected normalized frame, sampled without looping. Use a common neutral for aim poses or held pose offsets. A missing clip raises a validation warning and contributes identity.
+- **Skeleton rest reference**: target skeleton rest pose; takes priority over the clip field. Use only when the motion was authored relative to this rest pose.
+
+Translation uses source minus reference. Local rotation uses delta = source * inverse(reference), then result = weightedDelta * base, preserving the engine's composition convention. Quaternions use shortest-path interpolation and are normalized. Scale uses source/reference ratios, blended from unit scale. Near-zero reference scale contributes unit scale on that axis. Additive sampling preserves animated scale relative to source rest scale; ordinary override retargeting continues to preserve target rest scale.
+
+**Mesh-space additive rotation** computes rotation deltas in the skeleton's model frame, applies them to the underlying model rotations, then reconstructs locals against the updated parent. This is useful for aiming over a leaning body. Translation and scale remain local. Rotation hierarchy evaluation uses quaternions, avoiding contamination from nonuniform scale in matrices. Masks restrict writes; unmasked local transforms stay unchanged. An included descendant can compensate for a changed ancestor to achieve its model-space target.
+
+For weapon rigs, place locomotion and action overrides first, then additive aim/recoil/breathing layers, then the existing rig/IK stage. Reload and inspect are normally authored actions, not automatically additive clips. Solve hand contact after additive motion. Only the base layer exports root motion; upper source and reference samples remove their planar root motion consistently.
+
+Version 1–5 files keep zero-time, clip-relative defaults. Intentional fixes affect transitions between different neutral poses, additive scale tracks, and additive layers already marked mesh-space (previously ignored). The reference is sampled at runtime, supporting live edits and target-skeleton binding; offline delta baking and fractional per-bone masks are not implemented. See [research, plan and validation](additive-animation-overhaul.md).
 
 The 2D tree is freeform Cartesian; directional blend trees and nested trees are not implemented. Layer weight can be changed from C# with `Animator.SetLayerWeight`, and the Animator window exposes layers, masks, state graphs and transition editing.
 

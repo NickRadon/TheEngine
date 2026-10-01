@@ -61,6 +61,7 @@ bool AnimatorController::Save(std::ostream& out) const
         // Version 4 field; version 1-3 readers would take the path for a bone name.
         if (!l.maskAsset.empty()) out << " @mask " << std::quoted(l.maskAsset);
         out << "\n";
+        out << "reference_settings " << l.referenceTime << ' ' << l.referenceRest << "\n";
         if (!l.referenceClip.empty()) out << "reference " << std::quoted(l.referenceClip) << "\n";
         for (const AnimState& s : l.states)
         {
@@ -148,6 +149,7 @@ bool AnimatorController::Load(std::istream& file)
             }
             c.layers.push_back(l);
         }
+        else if (key == "reference_settings") in >> layer().referenceTime >> layer().referenceRest;
         else if (key == "reference") in >> std::quoted(layer().referenceClip);
         else if (key == "state")
         {
@@ -255,7 +257,9 @@ std::vector<AnimIssue> AnimatorController::Validate(ClipLibrary* clips, const Sk
         if (l.defaultState.empty()) add(layer, -1, -1, "Layer '" + l.name + "' has no default state.");
         else if (l.FindState(l.defaultState) < 0)
             add(layer, -1, -1, "Layer '" + l.name + "': default state '" + l.defaultState + "' does not exist.");
-        if (!l.referenceClip.empty() && clips && !clips->Get(l.referenceClip))
+        if (!std::isfinite(l.referenceTime) || l.referenceTime < 0.0f || l.referenceTime > 1.0f)
+            add(layer, -1, -1, "Additive reference time must be finite and between zero and one.");
+        if (!l.referenceRest && !l.referenceClip.empty() && clips && !clips->Get(l.referenceClip))
             add(layer, -1, -1, "Layer '" + l.name + "': reference clip '" + l.referenceClip + "' could not be loaded.");
 
         // States
@@ -537,33 +541,20 @@ float AnimatorInstance::StateLength(const AnimState& state, ClipLibrary& clips) 
 }
 
 void AnimatorInstance::EvaluateState(const AnimState& state, float normalizedTime, ClipLibrary& clips, const Skeleton& skeleton, bool extract,
-                                     Pose& out)
+                                     Pose& out, const AnimLayer* additive)
 {
     std::vector<WeightedClip> w;
     Weights(state, clips, w);
     if (w.empty())
     {
-        out = skeleton.rest;
+        out = additive ? Pose(skeleton.rest.size()) : skeleton.rest;
         return;
     }
     const float n = state.loop ? normalizedTime - std::floor(normalizedTime) : std::clamp(normalizedTime, 0.0f, 1.0f);
-    float accumulated = 0.0f;
-    Pose sample;
-    for (const WeightedClip& c : w)
-    {
-        Pose& target = accumulated == 0.0f ? out : sample;
-        SampleClip(*c.clip, clips.Binding(c.clip, &skeleton), skeleton, n * c.clip->duration, extract, target);
-        if (accumulated > 0.0f)
-        {
-            const float t = c.weight / (accumulated + c.weight);
-            for (size_t i = 0; i < out.size(); ++i) out[i] = Blend(out[i], sample[i], t);
-        }
-        accumulated += c.weight;
-    }
-    if (!state.offsets.empty())
-    {
+    auto applyOffsets = [&](Pose& samplePose) {
+        if (state.offsets.empty()) return;
         RootMotion ignored;
-        AnimationStream stream(skeleton, out, ignored);
+        AnimationStream stream(skeleton, samplePose, ignored);
         for (const AnimPoseOffset& offset : state.offsets)
         {
             const BoneHandle bone = stream.Bind(offset.bone);
@@ -572,7 +563,56 @@ void AnimatorInstance::EvaluateState(const AnimState& state, float normalizedTim
             const glm::mat4 adjusted = glm::translate(glm::mat4(1.0f), offset.position) * glm::mat4_cast(offset.rotation) * current;
             stream.SetModel(bone, adjusted);
         }
+    };
+    float accumulated = 0.0f;
+    Pose sample;
+    for (const WeightedClip& c : w)
+    {
+        Pose& target = accumulated == 0.0f ? out : sample;
+        SampleClip(*c.clip, clips.Binding(c.clip, &skeleton), skeleton, n * c.clip->duration, extract, target, additive != nullptr);
+        if (additive) applyOffsets(target);
+        if (additive)
+        {
+            Pose reference;
+            const float time = std::isfinite(additive->referenceTime) ? std::clamp(additive->referenceTime, 0.0f, 1.0f) : 0.0f;
+            if (additive->referenceRest) reference = skeleton.rest;
+            else
+            {
+                const AnimationClip* neutral = additive->referenceClip.empty() ? c.clip : clips.Get(additive->referenceClip);
+                if (!neutral) { target.assign(skeleton.rest.size(), BoneTransform{}); reference = target; }
+                else
+                {
+                    SampleClip(*neutral, clips.Binding(neutral, &skeleton), skeleton, time * neutral->duration, extract, reference, true);
+                    if (additive->referenceClip.empty()) applyOffsets(reference);
+                }
+            }
+            std::vector<glm::quat> sourceModel, referenceModel;
+            if (additive->meshSpaceRotation) { sourceModel.resize(target.size()); referenceModel.resize(target.size()); }
+            for (size_t b = 0; b < target.size(); ++b)
+            {
+                const int parent = skeleton.parents[b];
+                if (additive->meshSpaceRotation)
+                {
+                    sourceModel[b] = glm::normalize((parent < 0 ? glm::quat(1,0,0,0) : sourceModel[parent]) * target[b].r);
+                    referenceModel[b] = glm::normalize((parent < 0 ? glm::quat(1,0,0,0) : referenceModel[parent]) * reference[b].r);
+                }
+                target[b].r = glm::normalize(additive->meshSpaceRotation
+                    ? sourceModel[b] * glm::inverse(referenceModel[b])
+                    : target[b].r * glm::inverse(reference[b].r));
+                if (target[b].r.w < 0.0f) target[b].r = -target[b].r;
+                target[b].t -= reference[b].t;
+                for (int axis = 0; axis < 3; ++axis)
+                    target[b].s[axis] = std::fabs(reference[b].s[axis]) > 1e-6f ? target[b].s[axis] / reference[b].s[axis] : 1.0f;
+            }
+        }
+        if (accumulated > 0.0f)
+        {
+            const float t = c.weight / (accumulated + c.weight);
+            for (size_t i = 0; i < out.size(); ++i) out[i] = Blend(out[i], sample[i], t);
+        }
+        accumulated += c.weight;
     }
+    if (!additive) applyOffsets(out);
 }
 
 RootMotion AnimatorInstance::StateMotion(const AnimState& state, float from, float to, ClipLibrary& clips) const
@@ -743,9 +783,10 @@ void AnimatorInstance::UpdateLayer(int index, float dt, ClipLibrary& clips, cons
     const AnimLayer& layer = m_Controller->layers[index];
     LayerState& ls = m_Layers[index];
     const auto& states = layer.states;
+    const AnimLayer* additive = index > 0 && layer.blending == AnimLayerBlending::Additive ? &layer : nullptr;
     if (ls.current < 0 || ls.current >= static_cast<int>(states.size()))
     {
-        pose = skeleton.rest;
+        pose = index > 0 && layer.blending == AnimLayerBlending::Additive ? Pose(skeleton.rest.size()) : skeleton.rest;
         return;
     }
     const auto advance = [&](int s, float time) { return time + dt * states[s].speed / StateLength(states[s], clips); };
@@ -841,7 +882,7 @@ void AnimatorInstance::UpdateLayer(int index, float dt, ClipLibrary& clips, cons
         float accumulated = 0.0f;
         for (size_t i = 0; i < ls.sources.size(); ++i)
         {
-            EvaluateState(states[ls.sources[i].state], ls.sources[i].time, clips, skeleton, extract, m_PoseC);
+            EvaluateState(states[ls.sources[i].state], ls.sources[i].time, clips, skeleton, extract, m_PoseC, additive);
             if (i == 0)
                 pose = m_PoseC;
             else
@@ -853,10 +894,10 @@ void AnimatorInstance::UpdateLayer(int index, float dt, ClipLibrary& clips, cons
         }
     }
     else
-        EvaluateState(states[ls.current], ls.time, clips, skeleton, extract, pose);
+        EvaluateState(states[ls.current], ls.time, clips, skeleton, extract, pose, additive);
     if (ls.next >= 0)
     {
-        EvaluateState(states[ls.next], ls.nextTime, clips, skeleton, extract, m_PoseB);
+        EvaluateState(states[ls.next], ls.nextTime, clips, skeleton, extract, m_PoseB, additive);
         for (size_t b = 0; b < pose.size() && b < m_PoseB.size(); ++b) pose[b] = Blend(pose[b], m_PoseB[b], w);
     }
 
@@ -955,19 +996,26 @@ void AnimatorInstance::Update(float dt, ClipLibrary& clips, const Skeleton& skel
         }
         else
         {
-            // Additive: use an explicit neutral clip when supplied, so a held pose offset does not
-            // cancel itself against the state's first frame.
-            const LayerState& ls = m_Layers[i];
-            if (ls.current < 0) continue;
-            if (const AnimationClip* reference = layer.referenceClip.empty() ? nullptr : clips.Get(layer.referenceClip))
-                SampleClip(*reference, clips.Binding(reference, &skeleton), skeleton, 0.0f, true, m_RefPose);
-            else EvaluateState(layer.states[ls.current], 0.0f, clips, skeleton, true, m_RefPose);
+            // Sources were converted to deltas before all tree and transition blends.
+            std::vector<glm::quat> baseModel, resultModel;
+            if (layer.meshSpaceRotation) { baseModel.resize(pose.size()); resultModel.resize(pose.size()); }
             for (size_t b = 0; b < pose.size(); ++b)
             {
-                if (!mask[b]) continue;
-                const glm::quat delta = glm::normalize(m_LayerPose[b].r * glm::inverse(m_RefPose[b].r));
-                pose[b].r = glm::normalize(glm::slerp(glm::quat(1, 0, 0, 0), delta, w) * pose[b].r);
-                pose[b].t += (m_LayerPose[b].t - m_RefPose[b].t) * w;
+                const int parent = skeleton.parents[b];
+                const glm::quat parentBase = !layer.meshSpaceRotation || parent < 0 ? glm::quat(1,0,0,0) : baseModel[parent];
+                const glm::quat parentResult = !layer.meshSpaceRotation || parent < 0 ? glm::quat(1,0,0,0) : resultModel[parent];
+                if (layer.meshSpaceRotation) baseModel[b] = glm::normalize(parentBase * pose[b].r);
+                if (mask[b])
+                {
+                    const glm::quat delta = m_LayerPose[b].r.w < 0.0f ? -m_LayerPose[b].r : m_LayerPose[b].r;
+                    const glm::quat weighted = glm::slerp(glm::quat(1,0,0,0), delta, w);
+                    pose[b].r = glm::normalize(layer.meshSpaceRotation
+                        ? glm::inverse(parentResult) * weighted * baseModel[b]
+                        : weighted * pose[b].r);
+                    pose[b].t += m_LayerPose[b].t * w;
+                    pose[b].s *= glm::mix(glm::vec3(1.0f), m_LayerPose[b].s, w);
+                }
+                if (layer.meshSpaceRotation) resultModel[b] = glm::normalize(parentResult * pose[b].r);
             }
         }
     }
